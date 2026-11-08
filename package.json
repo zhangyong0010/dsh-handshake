@@ -1,0 +1,71 @@
+{
+  "name": "@local/dsh-handshake",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Hand off development tasks between Codex and DeepSeek Harness with original requirements, shared project rules and workspace checks.",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "host/util.js",
+    "host/store.js",
+    "host/packet.js",
+    "host/dsh-session.js",
+    "host/codex.js",
+    "host/executor.js",
+    "host/core.js",
+    "host/routes.js",
+    "host/agent.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "host/identity.js",
+    "host/zstd.js",
+    "host/workspace.js",
+    "host/projects.js",
+    "host/context.js",
+    "host/receipt.js",
+    "docs/handoff.md",
+    "assets/icon-180.png",
+    "assets/launch.png"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zhangyong0010/dsh-handshake.git"
+  },
+  "homepage": "https://github.com/zhangyong0010/dsh-handshake#readme",
+  "bugs": {
+    "url": "https://github.com/zhangyong0010/dsh-handshake/issues"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "codex",
+    "deepseek-harness",
+    "handoff"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

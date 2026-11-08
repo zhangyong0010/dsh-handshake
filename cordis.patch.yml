@@ -1,0 +1,4 @@
+- insert:
+    - id: dsh-handshake
+      name: '@local/dsh-handshake'
+      config: {}

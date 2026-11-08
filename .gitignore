@@ -1,0 +1,16 @@
+.DS_Store
+node_modules/
+.env
+.env.*
+!.env.example
+*.log
+*.tgz
+*.result.json
+.backups/
+.pre-*/
+.dsh-handshake/
+.codex/
+.dsh/
+coverage/
+output/
+tmp/
