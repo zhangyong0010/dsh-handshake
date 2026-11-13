@@ -65,8 +65,10 @@ export function renderPrompt(packet) {
     add('接收核对 / Read receipt', [
       '先完整读取上述资料，核对目标、最新补充要求、有效约束、分支、未提交改动与下一步，再修改项目文件。',
       packet.brief ? '先读 brief.json，再按需查阅 task-requirements.json 的完整用户要求。每条要求保留来源，请结合后续明确修订判断当前范围。' : '用户要求的完整原文保存在 user-requests.json 及历史证据文件中，不能只依赖本提示词中的预览。',
-      packet.executionPlan?.mode === 'read-only' ? '本轮只读，宿主已校验资料与代码基线。阅读后直接审查，无需写入回执文件。' : `读完并核对后首先运行此命令生成版本绑定回执：${receiptCommand(packet)}`,
-      '命令校验失败时停止修改，报告变化并等待重新准备；不得手工伪造回执。回执仅证明资料核对，不证明任务完成。',
+      packet.target === 'dsh'
+        ? `读完并核对后，调用原生 handshake 工具生成回执：${JSON.stringify({ action:'acknowledge', taskId:t.id, revision:packet.revision, packetDigest:packet.digest })}。沿用当前工作区权限，不执行 shell 回执命令，也不要申请扩大权限。`
+        : packet.executionPlan?.mode === 'read-only' ? '本轮只读，宿主已校验资料与代码基线。阅读后直接审查，无需写入回执文件。' : `读完并核对后首先运行此命令生成版本绑定回执：${receiptCommand(packet)}`,
+      '回执校验失败时停止修改，报告变化并等待重新准备；不得手工伪造回执。回执仅证明资料核对，不证明任务完成。',
     ])
   }
   if (!packet.brief) {

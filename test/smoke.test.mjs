@@ -202,7 +202,7 @@ test('spawn errors never masquerade as executing or write a silent automation', 
   fresh()
   const core = createCore(ctxFor(), { codexBinary: path.join(sandbox, 'missing-binary') })
   const task = await core.convertDsh({ sessionId: 'dsh-source' })
-  await assert.rejects(core.executeTask({ taskId: task.id }), /spawn failed|执行能力不可用/)
+  await assert.rejects(core.executeTask({ taskId: task.id }), { code:'receiver-unavailable' })
   assert.equal(store.loadTask(task.id).status, 'staged', 'capability preflight rejects before starting')
   assert.equal(fs.existsSync(path.join(sandbox, '.codex', 'automations')), false)
 })
@@ -242,9 +242,9 @@ test('real HTTP convert routes preserve idempotency in both directions', async (
     assert.equal((await res.json()).tasks.length, 1)
   } finally { await new Promise((resolve) => server.close(resolve)) }
 })
-test('production bundle is v0.2.0 and has no quota module or stream meter', () => {
+test('production bundle is v0.2.1 and has no quota module or stream meter', () => {
   const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url)))
-  assert.equal(pkg.version, '0.2.0')
+  assert.equal(pkg.version, '0.2.1')
   assert.equal(pkg.files.some((file) => /quota|usage/.test(file)), false)
   const core = fs.readFileSync(new URL('../host/core.js', import.meta.url), 'utf8')
   assert.doesNotMatch(core, /quota|pluginSettings/)

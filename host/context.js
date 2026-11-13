@@ -50,7 +50,7 @@ export function normalizeMessages(info, source) {
   }
   return messages
 }
-export function captureContext(task, project, messages, snapshot, revision) {
+export function captureContext(task, project, messages, snapshot, revision, { includeAssistant = true } = {}) {
   const user = messages.filter((message) => message.role === 'user')
   if (!user.length && !messages.some((message) => message.role === 'assistant') && !task.requirements?.length) throw new Error('没有可交接的任务正文')
   const candidates = []
@@ -65,8 +65,8 @@ export function captureContext(task, project, messages, snapshot, revision) {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   const write = (name, value) => { const file = path.join(dir, name); fs.writeFileSync(file, JSON.stringify(redactValue(value), null, 2), { mode: 0o600 }); return { path: file, sha256: digest(fs.readFileSync(file)), required: true, kind: name } }
   const requirements = write('user-requests.json', { ordering: 'chronological-within-source-session', precedence: 'latest explicit user amendment supersedes earlier incompatible requirements; do not treat assistant suggestions as user approval', messages: user, candidates })
-  const assistant = write('assistant-history.json', { authority: 'unverified-assistant-statements', messages: messages.filter((message) => message.role === 'assistant') })
-  assistant.required = false
+  const assistant = includeAssistant ? write('assistant-history.json', { authority: 'unverified-assistant-statements', messages: messages.filter((message) => message.role === 'assistant') }) : null
+  if (assistant) assistant.required = false
   const safeSnapshot = redactValue(snapshot)
   const workspace = write('workspace.json', safeSnapshot)
   // Legacy project-wide evidence is retained on disk. Follow only references
@@ -118,7 +118,8 @@ export function captureContext(task, project, messages, snapshot, revision) {
     scope: activeScope, explicitRules: project.constraints, acceptance: project.verify, decisions: project.decisions,
     recentConstraints: attributed('constraints', 6), suggestedAcceptance: attributed('verify', 4),
     progress: previousResult?.observed ?? { changedFiles: [], baselineFiles: snapshot.files.map((file) => file.path).slice(0, 30), checks: [] },
-    remaining: previousResult?.reported?.remaining ?? candidates.filter((entry) => entry.kind === 'todos').slice(-4).map((entry) => entry.text), nextStep: previousResult?.reported?.nextStep ?? '',
+    remaining: (includeAssistant ? previousResult?.reported?.remaining : null) ?? candidates.filter((entry) => entry.kind === 'todos').slice(-4).map((entry) => entry.text),
+    nextStep: includeAssistant ? previousResult?.reported?.nextStep ?? '' : '',
   }
   const briefRef = write('brief.json', brief)
   const lineage = write('task-requirements.json', { messages: instructions.map(({id, source, sessionId, seq, text, excerpt}) => ({id, source, sessionId, seq, text: text ?? excerpt})) })
@@ -126,13 +127,13 @@ export function captureContext(task, project, messages, snapshot, revision) {
     goalAuthority: project.goalConfirmed ? 'user-maintained' : 'initial-user-request-with-historical-scope',
     constraints: project.constraints, decisions: project.decisions, verify: project.verify, notes: project.notes,
     precedence: 'Confirmed rules are user-maintained. Read the task brief for scoped requirements.' })
-  const references = [briefRef, lineage, master, { ...requirements, required: false }, workspace, assistant, ...prior, ...snapshot.references.map((reference) => ({ ...reference, required: reference.kind === 'project-rules' }))]
+  const references = [briefRef, lineage, master, { ...requirements, required: false }, workspace, ...(assistant ? [assistant] : []), ...prior, ...snapshot.references.map((reference) => ({ ...reference, required: reference.kind === 'project-rules' }))]
   const categories = (kind) => candidates.filter((entry) => entry.kind === kind)
   return {
     goal, goalAuthority: authority, brief,
     latestRequest: brief.latestRequest,
     recentRequests: user.slice(-4).map((message) => message.text),
-    progress: messages.filter((message) => message.role === 'assistant').slice(-4).map((message) => message.text).join('\n\n'),
+    progress: includeAssistant ? messages.filter((message) => message.role === 'assistant').slice(-4).map((message) => message.text).join('\n\n') : '',
     constraints: [...project.constraints], decisions: [...project.decisions], verify: [...project.verify],
     candidates, todos: categories('todos').map((entry) => ({ text: entry.text, done: false, sourceEntry: entry.sourceEntry })),
     openQuestions: categories('openQuestions').map((entry) => entry.text),

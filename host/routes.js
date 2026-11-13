@@ -6,6 +6,7 @@ const ROUTES = [
   ['refresh','POST'], ['check','POST'], ['prepare','POST'], ['project','POST'], ['clarify','POST'],
   ['open-codex','POST'], ['open-dsh','POST'], ['review','POST'], ['cloud-plan','POST'], ['release-unconfirmed','POST'],
   ['replace-target','POST'], ['archive','POST'], ['hide-project','POST'],
+  ['inspect','GET'], ['materials','GET'], ['run-status','GET'], ['sharing','POST'], ['discard-preview','POST'],
 ]
 const errorPayload = (error) => ({ ok:false, error:String(error.message), code:error.code, client:error.client, stopToken:error.stopToken })
 function isDesktopRequest(request, url) {
@@ -18,10 +19,14 @@ function isDesktopRequest(request, url) {
 async function dispatch(core, name, body, url, desktop = false) {
   if (name === 'board') return core.board({ refresh: url.searchParams.get('refresh') === '1' })
   if (name === 'task') return core.taskDetail(url.searchParams.get('id') ?? '')
+  if (name === 'inspect') return core.inspectTask(url.searchParams.get('id') ?? '',url.searchParams.get('digest'))
+  if (name === 'materials') return core.materials(url.searchParams.get('id') ?? '',url.searchParams.get('digest'),url.searchParams.get('file'),Number(url.searchParams.get('offset') ?? 0))
+  if (name === 'run-status') return core.runStatus(url.searchParams.get('id') ?? '')
   if (name === 'convert') {
     if (!['codex','dsh'].includes(body.kind)) throw new Error('unknown source kind')
     const { sessionId, rolloutFile, taskId, force } = body
-    const task = body.kind === 'codex' ? core.convertCodex({ rolloutFile, taskId, force }) : await core.convertDsh({ sessionId, taskId, force })
+    const options = { taskId, force, preview:body.preview === true }
+    const task = body.kind === 'codex' ? core.convertCodex({ rolloutFile, ...options }) : await core.convertDsh({ sessionId, ...options })
     return core.taskDetail(task.id)
   }
   if (name === 'execute') {
@@ -32,13 +37,17 @@ async function dispatch(core, name, body, url, desktop = false) {
   if (name === 'check') return core.taskDetail((await core.checkTask(body)).id)
   if (name === 'prepare') return core.taskDetail((await core.prepareNext(body)).id)
   if (name === 'clarify') return core.taskDetail((await core.clarify(body)).id)
+  if (name === 'sharing') return core.taskDetail((await core.setSharing(body)).id)
+  if (name === 'discard-preview') return { ok:core.discardPreview(body) }
   if (name === 'replace-target') return core.taskDetail((await core.replaceMissingTarget(body)).id)
   if (name === 'review') { await core.reviewTask(body); return core.taskDetail(body.taskId) }
   if (name === 'cloud-plan') return { ok:true, plan:core.cloudPlan(body.taskId) }
   if (name === 'open-codex') {
     if (!desktop) throw new Error('请从 DSH 桌面客户端打开 Codex')
-    await core.openCodex(body.taskId, body.role)
-    return { ok: true }
+    const url = body.copy === true
+      ? await core.openCodex(body.taskId,body.role,{copy:true})
+      : await core.openCodex(body.taskId,body.role)
+    return { ok: true, url }
   }
   if (name === 'open-dsh') return { ok:true, sessionId:await core.openDsh(body.taskId,body.role) }
   if (name === 'project') return { ok: true, project: core.updateProject(body) }

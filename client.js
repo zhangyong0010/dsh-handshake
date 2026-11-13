@@ -158,6 +158,62 @@ window.__ModuleLoader__.load({
       'dialog.execute':'Run round {n} on {target}? Source activity and workspace state will be checked again before launch.',
     });
     Object.assign(zh, {
+      'dialog.preview':'正在预览。点「开始接力」才会运行。',
+      'dialog.task':'来源会话', 'dialog.folder':'将在哪个文件夹工作', 'dialog.branch':'分支 {branch}',
+      'dialog.pendingFiles':'现有未提交改动涉及 {n} 个文件', 'dialog.readiness':'正在检查两端会话…',
+      'dialog.ready':'可以开始。目标模型的可用额度由目标客户端决定。',
+      'dialog.updated':'资料已更新。请核对这一版后，再点开始接力。',
+      'dialog.noteScope':'后续接力也保留这条补充', 'action.saveNote':'保存补充',
+      'dialog.share':'查看要交接的资料', 'dialog.shareHint':'目标会读取原始用户要求、项目规则和工作区快照。确认前可检查正文和代码差异。',
+      'dialog.shareAssistant':'附带来源助手的历史回复', 'dialog.shareLoading':'正在读取资料…', 'dialog.moreContent':'继续读取',
+      'materials.task-requirements.json':'用户要求原文', 'materials.workspace.json':'工作区与代码差异',
+      'materials.prompt':'发送给目标端的提示词',
+      'materials.project-master.json':'项目约束与验收要求', 'materials.assistant-history.json':'来源助手的历史回复',
+      'dialog.openedCodex':'已请求打开 Codex。若没有跳到目标会话，可复制会话链接。',
+      'dialog.codexLink':'可将会话链接复制到系统浏览器打开。',
+      'action.viewCodexLink':'查看 Codex 会话链接', 'action.copyCodex':'复制 Codex 会话链接', 'action.copied':'已复制会话链接',
+      'action.continueTo':'继续接力到 {client}', 'action.resumeArchived':'恢复到接力区',
+      'task.archivedHint':'接力已在历史中。恢复后可继续接力。',
+      'task.pendingReview':'核对改动和测试后即可验收，也可以继续接力。',
+      'task.receiptMissing':'DSH 已结束本轮，但交接回执未通过。请检查结果或重试本轮。',
+      'task.runUnknown':'先检查目标会话。仍在运行就等待，已结束可重新检查状态。',
+      'action.checkRun':'检查执行状态', 'task.runStillUnknown':'仍未收到本轮结束记录。请核对目标会话。',
+      'task.releaseUnknown':'结束本轮记录', 'task.releaseUnknownConfirm':'目标会话已经停止，结束本轮记录',
+      'task.testPass':'已观察到 {n} 条测试命令通过', 'task.testFail':'已观察到 {n} 条测试命令未通过',
+      'task.noObservedTests':'本轮暂无可核实的测试结果', 'task.otherCommands':'另有 {n} 条执行记录',
+      'task.modelChecks':'模型报告的检查', 'task.noChangedFiles':'未观察到文件变化',
+      'task.targetQuota':'打开 DSH 检查模型额度',
+      'task.targetAuth':'打开 DSH 检查模型来源',
+    });
+    Object.assign(en, {
+      'dialog.preview':'Preview only. The run starts when you select Start handoff.',
+      'dialog.task':'Source conversation', 'dialog.folder':'Working folder', 'dialog.branch':'Branch {branch}',
+      'dialog.pendingFiles':'{n} files already have uncommitted changes', 'dialog.readiness':'Checking both clients…',
+      'dialog.ready':'Ready to start. Model allowance is managed by the receiving client.',
+      'dialog.updated':'The handoff changed. Review this version before starting.',
+      'dialog.noteScope':'Keep this note for later handoffs', 'action.saveNote':'Save note',
+      'dialog.share':'View handoff materials', 'dialog.shareHint':'The receiver reads original requests, project rules and the workspace snapshot. Review the text and diff before starting.',
+      'dialog.shareAssistant':'Include source assistant replies', 'dialog.shareLoading':'Loading materials…', 'dialog.moreContent':'Load more',
+      'materials.task-requirements.json':'Original requests', 'materials.workspace.json':'Workspace and code diff',
+      'materials.prompt':'Prompt sent to the receiver',
+      'materials.project-master.json':'Project constraints and acceptance checks', 'materials.assistant-history.json':'Source assistant replies',
+      'dialog.openedCodex':'Requested Codex to open. Copy the session link if it opens elsewhere.',
+      'dialog.codexLink':'Copy the session link to open it in your browser.',
+      'action.viewCodexLink':'Show Codex session link', 'action.copyCodex':'Copy Codex session link', 'action.copied':'Session link copied',
+      'action.continueTo':'Continue in {client}', 'action.resumeArchived':'Restore to handoff board',
+      'task.archivedHint':'This handoff is in History. Restore it to continue.',
+      'task.pendingReview':'Review changes and tests to accept, or continue the handoff.',
+      'task.receiptMissing':'The DSH round ended without a verified handoff receipt. Review the result or retry this round.',
+      'task.runUnknown':'Check the destination conversation first. Wait if it is still running, or check the status again.',
+      'action.checkRun':'Check run status', 'task.runStillUnknown':'The end of this run is still unconfirmed. Check the destination conversation.',
+      'task.releaseUnknown':'Close this run record', 'task.releaseUnknownConfirm':'Destination has stopped. Close this run record.',
+      'task.testPass':'{n} test commands passed', 'task.testFail':'{n} test commands failed',
+      'task.noObservedTests':'No test results verified this round', 'task.otherCommands':'{n} other execution records',
+      'task.modelChecks':'Checks reported by the model', 'task.noChangedFiles':'No file changes observed',
+      'task.targetQuota':'Open DSH to check model allowance',
+      'task.targetAuth':'Open DSH to check the model provider',
+    });
+    Object.assign(zh, {
       'action.start':'开始接力', 'action.handoff':'接力到 {target}', 'action.switchSource':'切换到 {source} 来源',
       'action.openCodex':'在 Codex 中打开', 'action.addNote':'补一句', 'action.saveNote':'更新本轮简报',
       'master.title':'长期项目规则', 'master.save':'保存长期规则',
@@ -476,13 +532,14 @@ window.__ModuleLoader__.load({
     const desktop = () => typeof document !== 'undefined' && new URL(document.baseURI).protocol === 'dsh-app:';
     const sessionKey = (session) => session.kind + ':' + (session.sessionId || session.file);
     const prepareSession = (onPrepare, session) => onPrepare('convert', session.kind === 'codex'
-      ? { kind:session.kind, rolloutFile:session.file } : { kind:session.kind, sessionId:session.sessionId });
+      ? { kind:session.kind, rolloutFile:session.file, preview:true } : { kind:session.kind, sessionId:session.sessionId, preview:true });
     const archiveBinding = (task) => ({ taskId:task.id, revision:task.revision, runId:task.runId ?? null });
     const canOpen = (task, kind, openDsh) => kind === 'codex' ? desktop() && task.canOpenCodex : Boolean(openDsh && task.sessions?.dsh);
 
-    async function openSession(task, kind, openDsh, source = false) {
-      const response = await call('/api/dsh-handshake/open-'+kind, { taskId:task.id, role:source ? 'source' : undefined });
+    async function openSession(task, kind, openDsh, source = false, copy = false) {
+      const response = await call('/api/dsh-handshake/open-'+kind, { taskId:task.id, role:source ? 'source' : undefined, copy });
       if (kind === 'dsh') openDsh(response.sessionId);
+      return response.url;
     }
 
     function More({ t, children }) {
@@ -530,7 +587,6 @@ window.__ModuleLoader__.load({
         .map((entry)=>entry.text))];
       return h('div', { className:'dsh-handshake-brief' },
         row(t('dialog.latest'), preview(brief.latestRequest || brief.goal)),
-        row(t('task.nextStep'), preview(brief.nextStep !== brief.latestRequest && brief.nextStep)),
         row(t('dialog.rules'), preview(constraints.slice(0,3).join(' · '))),
         row(t('dialog.acceptance'), preview(brief.acceptance?.slice(0,3).join(' · '))),
         row(t('dialog.sourceClues'),preview(currentClues.slice(0,2).join(' · '))),
@@ -541,82 +597,159 @@ window.__ModuleLoader__.load({
           brief.goal ? h('div',null,brief.goal) : null,
           brief.latestRequest && brief.latestRequest !== brief.goal ? row(t('dialog.latest'),brief.latestRequest) : null,
           row(t('dialog.rules'),list(constraints)), row(t('dialog.acceptance'),list(brief.acceptance)),
+          row(t('task.nextStep'),brief.nextStep !== brief.latestRequest && brief.nextStep),
           list(brief.remaining),
           row(t('dialog.sourceClues'),list(sourceClues))));
+    }
+
+    function HandoffMaterials({ task, t, busy, onChange }) {
+      const [files,setFiles] = useState(null);
+      const [part,setPart] = useState(null);
+      const [loading,setLoading] = useState(false);
+      const [error,setError] = useState(null);
+      const read = async (index, offset = 0) => {
+        setLoading(true); setError(null);
+        const params = new URLSearchParams({id:task.id,digest:task.packetDigest});
+        if (index != null) { params.set('file',index); params.set('offset',offset); }
+        try {
+          const response = await call('/api/dsh-handshake/materials?'+params);
+          setFiles(response.files);
+          if (index != null) setPart((previous)=>({index,text:(offset ? previous?.text ?? '' : '')+response.text,next:response.nextOffset}));
+        } catch (e) { setError(e.message); }
+        finally { setLoading(false); }
+      };
+      return h('details',{className:'dsh-handshake-history',onToggle:(event)=>{ if (event.currentTarget.open && !files && !loading) void read(); }},
+        h('summary',null,t('dialog.share')),
+        h('p',null,t('dialog.shareHint')),
+        h('label',null,h('input',{type:'checkbox',checked:task.includeAssistant !== false,disabled:busy,onChange:(event)=>onChange(event.target.checked)}),t('dialog.shareAssistant')),
+        h('div',{className:'dsh-handshake-row'},...(files ?? []).map((file)=>h(Btn,{key:file.index,
+          label:file.kind === 'project-rules' ? file.name : t('materials.'+file.kind),disabled:busy || loading,onClick:()=>void read(file.index)}))),
+        loading ? h('span',{role:'status'},t('dialog.shareLoading')) : null,
+        part ? h('pre',{className:'dsh-handshake-pre'},part.text) : null,
+        part?.next != null ? h(Btn,{label:t('dialog.moreContent'),disabled:loading,onClick:()=>void read(part.index,part.next)}) : null,
+        error ? h('p',{role:'alert'},error) : null);
     }
 
     function StartHandoff({ summary: initial, t, onClose, onChanged, onStarted, openDsh }) {
       const [task, setTask] = useState(initial);
       const [draft, setDraft] = useState(task.brief?.clarification ?? '');
-      const [persist, setPersist] = useState(!task.brief?.clarification || task.brief.clarificationScope === 'task');
+      const [persist, setPersist] = useState(task.brief?.clarificationScope === 'task');
       const [busy, setBusy] = useState(false);
       const [error, setError] = useState(null);
+      const [readiness,setReadiness] = useState(null);
+      const [changed,setChanged] = useState(false);
+      const operation = useRef(false);
       const changedNote = draft.trim() !== (task.brief?.clarification ?? '') ||
         (Boolean(draft.trim()) && persist !== (task.brief?.clarificationScope === 'task'));
       const binding = { taskId:task.id, expectedRevision:task.revision, expectedDigest:task.packetDigest };
+      useEffect(() => {
+        let disposed = false;
+        setReadiness(null);
+        call('/api/dsh-handshake/inspect?'+new URLSearchParams({id:task.id,digest:task.packetDigest}))
+          .then((state)=>{ if (!disposed) setReadiness({...state,digest:task.packetDigest}); },
+            (reason)=>{ if (!disposed) setReadiness({status:'blocked',message:reason.message,digest:task.packetDigest}); });
+        return ()=>{disposed=true;};
+      },[task.id,task.packetDigest]);
       const resetTask = (next) => {
         setTask(next); setDraft(next.brief?.clarification ?? '');
-        setPersist(!next.brief?.clarification || next.brief.clarificationScope === 'task');
+        setPersist(next.brief?.clarificationScope === 'task');
       };
       const update = async (route, body) => {
+        if (operation.current) return;
+        operation.current = true;
         setBusy(true); setError(null);
         try {
           const result = await call('/api/dsh-handshake/'+route, body);
           if (route === 'execute') { onStarted?.(result.task); onClose(); }
-          else resetTask(result.taskSummary);
+          else {
+            if (route === 'check') setReadiness({status:'ready',digest:result.taskSummary.packetDigest});
+            setChanged(result.taskSummary.packetDigest !== task.packetDigest);
+            resetTask(result.taskSummary);
+          }
           await onChanged?.();
         } catch (e) {
           setError(e);
-          if (['execute','clarify','check'].includes(route)) {
+          if (['execute','clarify','check','sharing','replace-target'].includes(route)) {
             try {
               const detail = await call('/api/dsh-handshake/task?id='+encodeURIComponent(task.id));
-              if (['staged','failed'].includes(detail.task.status) && detail.task.revision !== task.revision) resetTask(detail.taskSummary);
+              if (['staged','failed'].includes(detail.task.status) && detail.task.revision !== task.revision) {
+                setChanged(true);
+                if (route === 'clarify') setTask(detail.taskSummary);
+                else resetTask(detail.taskSummary);
+              }
               else if (['unknown','executing','preparing'].includes(detail.task.status)) {
                 onStarted?.(detail.task); onClose();
               }
               await onChanged?.();
             } catch { /* keep the original error */ }
           }
-        } finally { setBusy(false); }
+        } finally { operation.current = false; setBusy(false); }
       };
-      const sourceError = error?.code?.startsWith('source-');
-      const targetError = error?.code?.startsWith('target-');
-      const canInspect = (sourceError || targetError) && canOpen(task,error.client,openDsh);
-      const interrupted = error?.code === 'source-interrupted' && error.stopToken;
+      const current = readiness?.digest === task.packetDigest ? readiness : null;
+      const issue = error?.code === 'brief-changed' ? (current?.status === 'blocked' ? current : null)
+        : error ?? (current?.status === 'blocked' ? current : null);
+      const sourceError = issue?.code?.startsWith('source-');
+      const targetError = issue?.code?.startsWith('target-');
+      const canInspect = (sourceError || targetError) && canOpen(task,issue.client,openDsh);
+      const interrupted = issue?.code === 'source-interrupted' && issue.stopToken;
       const occupied = task.failureCode === 'codex-session-occupied' && task.targetSession;
       const client = clientName(task.target);
+      const cancel = () => {
+        if (operation.current) return;
+        onClose();
+        if (task.previewOnly) void call('/api/dsh-handshake/discard-preview',binding).then(()=>onChanged?.()).catch(()=>{});
+      };
       return h(ConfirmDialog, { title:t('action.handoff',{target:client}),
         message:task.projectName || projectName(task.projectDir),
         confirmLabel:t(interrupted ? 'action.sourceStopped' : 'action.start'), cancelLabel:t('common.no'),
-        busy:busy || Boolean(changedNote) || !task.packetDigest || error?.code === 'target-missing',
-        onCancel:() => { if (!busy) onClose(); }, onConfirm:() => void update('execute',{ ...binding, stoppedSource:interrupted || undefined }) },
+        busy:busy || Boolean(changedNote) || !task.packetDigest || !current || (current.status === 'blocked' && !interrupted) ||
+          Boolean(issue?.code && issue.code !== 'source-interrupted'),
+        onCancel:cancel, onConfirm:() => void update('execute',{ ...binding, stoppedSource:interrupted || undefined }) },
+        h('div',{className:'dsh-handshake-muted'},t('dialog.preview')),
         h('strong',null,t(task.targetSession ? 'dialog.resumeSession' : 'dialog.newSession',{client})),
+        h('div',{className:'dsh-handshake-brief-row'},h('strong',null,t('dialog.task')),task.title),
+        h('div',{className:'dsh-handshake-brief-row'},h('strong',null,t('dialog.folder')),
+          h('div',{className:'dsh-handshake-path dsh-handshake-confirm-cwd'},task.projectDir),
+          h('div',{className:'dsh-handshake-row'},task.branch ? h(Badge,null,t('dialog.branch',{branch:task.branch})) : null,
+            task.branch && task.changedFileCount ? h(Badge,null,t('dialog.pendingFiles',{n:task.changedFileCount})) : null,
+            task.brief?.mode ? h(Badge,null,t('scope.'+task.brief.mode)) : null)),
+        changed ? h('div',{role:'status'},error?.code === 'brief-changed' ? error.message : t('dialog.updated')) : null,
+        !current || current.status === 'ready' ? h('div',{className:'dsh-handshake-muted',role:'status'},t(current ? 'dialog.ready' : 'dialog.readiness')) : null,
         h(HandoffBrief, { brief:task.brief ?? { goal:task.title }, cwd:task.projectDir, revision:task.revision, t }),
+        h(HandoffMaterials,{key:task.packetDigest,task,t,busy:busy || changedNote,
+          onChange:(includeAssistant)=>void update('sharing',{...binding,includeAssistant})}),
         h('details', { className:'dsh-handshake-history' }, h('summary',null,t('action.addNote')),
           h('div', { className:'dsh-handshake-note' }, h('textarea',{ value:draft, maxLength:2000, disabled:busy, 'aria-label':t('action.addNote'), onChange:(event)=>setDraft(event.target.value) }),
             h('label',null,h('input',{type:'checkbox',checked:persist,disabled:busy,onChange:(event)=>setPersist(event.target.checked)}),t('dialog.noteScope')),
             h(Btn,{ label:t('action.saveNote'), disabled:busy || !changedNote, onClick:()=>void update('clarify',{...binding,note:draft.trim(),scope:persist ? 'task' : 'round'}) }))),
-        error || occupied ? h('div',{className:'dsh-handshake-note'},h('div',{role:'alert',className:'dsh-handshake-err'},error?.message || task.error),
+        issue || occupied || (error?.code === 'brief-changed' && !changed) ? h('div',{className:'dsh-handshake-note'},h('div',{role:'alert',className:'dsh-handshake-err'},issue?.message || (occupied ? task.error : t('dialog.updated'))),
           h('div',{className:'dsh-handshake-row'},
-            canInspect ? h(Btn,{label:t('action.openSession',{client:clientName(error.client)}),disabled:busy,onClick:() => void openSession(task,error.client,openDsh,sourceError).catch((reason)=>setError(reason))}) : null,
+            canInspect ? h(Btn,{label:t('action.openSession',{client:clientName(issue.client)}),disabled:busy,onClick:() => void openSession(task,issue.client,openDsh,sourceError).catch((reason)=>setError(reason))}) : null,
             h(Btn,{label:t('action.checkAgain'),disabled:busy || changedNote,onClick:()=>void update('check',{taskId:task.id})}),
-            error?.code === 'target-missing' || occupied ? h(Btn,{label:t('action.replaceTarget'),disabled:busy || changedNote,onClick:()=>void update('replace-target',binding)}) : null)) : null);
+            issue?.code === 'target-missing' || occupied ? h(Btn,{label:t('action.replaceTarget'),disabled:busy || changedNote,onClick:()=>void update('replace-target',binding)}) : null)) : null);
     }
 
     function observedChecks(result, t) {
       const checks = result?.observed?.checks ?? [];
-      const failed = checks.filter((check) => Number.isInteger(check.exitCode) && check.exitCode !== 0).length;
-      const passed = checks.filter((check) => check.exitCode === 0).length;
-      if (failed || passed) return [passed && t('task.checked',{n:passed}),failed && t('task.checkFailed',{n:failed})].filter(Boolean).join(' · ');
-      return checks.length ? t('task.checkObserved',{n:checks.length}) : t('task.noChecks');
+      const tests = checks.filter((check) => check.test && Number.isInteger(check.exitCode));
+      const failed = tests.filter((check) => check.exitCode !== 0).length;
+      const passed = tests.length - failed;
+      return [
+        passed && t('task.testPass',{n:passed}), failed && t('task.testFail',{n:failed}),
+        !tests.length && t('task.noObservedTests'),
+        checks.length > tests.length && t('task.otherCommands',{n:checks.length - tests.length}),
+      ].filter(Boolean).join(' · ');
     }
 
     function RoundResult({ result, t }) {
       if (!result) return null;
       const { reported } = result;
+      const files = result.observed?.changedFiles;
       const fields = [
+        [t('task.changes'),result.observed?.workspace === 'unavailable' ? null : files?.join('、') || t('task.noChangedFiles')],
         [t('task.reported'), reported?.completed?.length ? reported.completed.join('、') : t('task.resultMissing')],
         [t('task.checks'), observedChecks(result,t)],
+        [t('task.modelChecks'),reported?.checks?.join('、')],
         [t('task.remaining'), reported ? reported.remaining?.join('、') || t('task.noRemaining') : t('task.reportMissing')],
         [t('task.nextStep'), reported?.nextStep],
       ].filter(([,value])=>value);
@@ -630,6 +763,8 @@ window.__ModuleLoader__.load({
       const [cloud, setCloud] = useState(null);
       const [busy, setBusy] = useState(false);
       const [error, setError] = useState(null);
+      const [navigation,setNavigation] = useState(null);
+      const [runFeedback,setRunFeedback] = useState(null);
       const resultRef = useRef(null);
       const detailRequest = useRef(0);
       const task = selected && detail?.taskSummary?.id === selected.id ? detail.taskSummary : selected ?? projectTask;
@@ -663,45 +798,86 @@ window.__ModuleLoader__.load({
       const running = ['preparing','executing','unknown'].includes(task.status);
       const ready = ['staged','failed'].includes(task.status);
       const completed = ['awaiting-review','done'].includes(task.status);
+      const receiptMissing = task.status === 'awaiting-review' && target === 'dsh' &&
+        ['pending','invalid'].includes(task.reception?.status);
       const isArchived = archived || Boolean(task.archivedAt) || task.inHistory;
       const preferred = running ? target : task.lastExecutedBy || source;
       const alternate = otherClient(preferred);
       const label = (kind) => t('action.openSession',{client:clientName(kind)});
       const action = (label,onClick,tone) => h(Btn,{label,onClick,tone,disabled:busy});
       const view = () => setOpen(!open);
-      const openClient = (kind) => () => void act(() => openSession(task,kind,openDsh),false);
-      const next = () => void act(() => onPrepare('prepare',{taskId:task.id}));
+      const openClient = (kind) => () => void act(async () => {
+        const url = await openSession(task,kind,openDsh);
+        if (kind === 'codex') setNavigation({ id:task.id,url,message:'dialog.openedCodex' });
+      },false);
+      const showCodexLink = () => void act(async () => {
+        const url = await openSession(task,'codex',openDsh,false,true);
+        setNavigation({ id:task.id,url,message:'dialog.codexLink' });
+      },false);
+      const next = () => void act(() => onPrepare('prepare',{taskId:task.id,preview:true}));
       const archive = (restore) => () => void act(() => onArchive(task,restore),false);
       const retry = () => void act(() => onPrepare('refresh',{taskId:task.id}));
+      const retryReceipt = () => void act(() => onPrepare('refresh',{taskId:task.id,preview:true,retryUnverified:true}));
       const canOpenPreferred = canOpen(task,preferred,openDsh);
+      const nextClient = task.lastExecutedBy && otherClient(task.lastExecutedBy);
+      const continueAction = nextClient && action(t('action.continueTo',{client:clientName(nextClient)}),next,'primary');
+      const checkRun = () => void act(async () => {
+        const status = await call('/api/dsh-handshake/run-status?id='+encodeURIComponent(task.id));
+        setRunFeedback(status.task.status === 'unknown' ? 'task.runStillUnknown' : null);
+        if (open) setDetail(status);
+      });
       const main = isArchived || completed || (task.status === 'failed' && task.result)
-        ? action(t(open ? 'board.showLess' : 'action.viewResult'),view,'primary')
+        ? (isArchived && !open ? action(t('action.resumeArchived'),archive(true),'primary')
+          : action(t(open ? 'board.showLess' : 'action.viewResult'),view,'primary'))
+        : task.status === 'unknown' ? action(t('action.checkRun'),checkRun,'primary')
         : ready ? action(t(task.status === 'failed' ? 'action.retry' : 'action.handoff',{target:clientName(target)}),retry,'primary')
         : canOpenPreferred ? action(label(preferred),openClient(preferred),'primary')
         : action(t(open ? 'board.showLess' : 'action.details'),view,'primary');
       const menu = h(More,{t},
+        isArchived ? action(t('action.restore'),archive(true)) : !running
+          ? action(t(task.status === 'awaiting-review' ? 'action.finishArchive' : 'action.archive'),archive(false)) : null,
         canOpenPreferred && (isArchived || completed || ready) ? action(label(preferred),openClient(preferred)) : null,
         canOpen(task,alternate,openDsh) ? action(label(alternate),openClient(alternate)) : null,
-        !isArchived && (completed || (task.status === 'failed' && task.result)) && task.lastExecutedBy
-          ? action(t('action.handoff',{target:clientName(otherClient(task.lastExecutedBy))}),next) : null,
-        !isArchived && ready && task.result ? action(t('action.retry'),retry) : null,
-        !(isArchived || completed || task.result) && (ready || canOpenPreferred) ? action(t('action.details'),view) : null,
+        canOpen(task,'codex',openDsh) ? action(t('action.viewCodexLink'),showCodexLink) : null,
+        !isArchived && !open && (completed || (task.status === 'failed' && task.result)) ? continueAction : null,
+        !isArchived && receiptMissing ? action(t('action.retry'),retryReceipt) :
+          !isArchived && ready && task.result ? action(t('action.retry'),retry) : null,
+        (isArchived && !open) || task.status === 'unknown' || (!(completed || task.result) && (ready || canOpenPreferred))
+          ? action(t('action.details'),view) : null,
         !running && !selected && !isArchived ? h(SessionChoices,{sources:projectTask.additionalSources ?? [],label:t('action.otherSessions'),t,
-          onSelect:(session)=>void act(() => prepareSession(onPrepare,session))}) : null,
-        isArchived ? action(t('action.restore'),archive(true)) : !running && task.status !== 'awaiting-review'
-          ? action(t('action.archive'),archive(false)) : null);
-      const result = detail?.task.id === task.id ? detail.task.result : null;
+          onSelect:(session)=>void act(() => prepareSession(onPrepare,session))}) : null);
+      const result = detail?.task.id === task.id ? detail.taskSummary.result : null;
       return h('article', { className:'dsh-handshake-card dsh-handshake-task-card', 'data-task-id':task.id, 'data-open':open },
         h('div', { className:'dsh-handshake-compact' },
           h(CompactTitle,{name:task.projectName || projectName(task.projectDir),title:task.title}),
           h(Badge, { tone:STATUS_TONE[task.status] ?? 'idle' }, t('task.status.'+task.status,{target:clientName(target)})),
           main, menu),
-        (error || task.error || task.result?.observed?.checks?.length) ? h('div', { className:'dsh-handshake-compact-line '+(error || task.error ? 'dsh-handshake-err' : 'dsh-handshake-muted'),
-          title:error || task.error || undefined, role:error ? 'alert' : undefined }, error || task.error || observedChecks(task.result,t)) : null,
+        (error || task.error || receiptMissing || task.result?.observed?.checks?.length) ? h('div', { className:'dsh-handshake-compact-line '+(error || task.error || receiptMissing ? 'dsh-handshake-err' : 'dsh-handshake-muted'),
+          title:error || task.error || undefined, role:error ? 'alert' : undefined }, error || task.error || (receiptMissing ? t('task.receiptMissing') : observedChecks(task.result,t))) : null,
+        navigation?.id === task.id ? h('div',{className:'dsh-handshake-row'},
+          h('span',{role:'status'},t(navigation.message)),
+          h('input',{readOnly:true,value:navigation.url,'aria-label':t('action.copyCodex'),onFocus:(event)=>event.target.select()}),
+          action(t('action.copyCodex'),()=>void act(async()=>{
+            await navigator.clipboard.writeText(navigation.url);
+            setNavigation({...navigation,message:'action.copied'});
+          },false))) : null,
+        isArchived ? h('div',{className:'dsh-handshake-muted'},t('task.archivedHint')) : null,
+        !isArchived && !open && completed && nextClient ? h('div',{className:'dsh-handshake-row'},
+          action(t('action.continueTo',{client:clientName(nextClient)}),next)) : null,
+        task.status === 'unknown' ? h('div',{className:'dsh-handshake-muted',role:'status'},t(runFeedback ?? 'task.runUnknown')) : null,
         open ? h('div', { className:'dsh-handshake-detail', ref:resultRef, tabIndex:-1, 'aria-label':t('task.result') },
           result ? h(RoundResult,{result,t}) : detail?.task.id !== task.id ? h('span',{role:'status'},t('task.loadingDetail')) : null,
           detail?.task.id === task.id ? h(React.Fragment,null,
-            task.status === 'awaiting-review' && !isArchived ? h('div',{className:'dsh-handshake-row'},action(t('action.finishArchive'),archive(false),'primary')) : null,
+            completed && !isArchived ? h('div',{className:'dsh-handshake-note'},
+              h('div',{className:'dsh-handshake-muted'},t(receiptMissing ? 'task.receiptMissing' : 'task.pendingReview')),
+              h('div',{className:'dsh-handshake-row'},receiptMissing ? action(t('action.retry'),retryReceipt,'primary') : null,continueAction,
+                task.status === 'awaiting-review' ? action(t('action.finishArchive'),archive(false)) : null)) : null,
+            task.status === 'failed' && !isArchived ? h('div',{className:'dsh-handshake-row'},continueAction,
+              target === 'dsh' && canOpen(task,'dsh',openDsh)
+                ? task.failureCode === 'QUOTA' ? action(t('task.targetQuota'),openClient('dsh'))
+                  : ['AUTH','MISSING_CREDENTIAL'].includes(task.failureCode) ? action(t('task.targetAuth'),openClient('dsh')) : null
+                : null) : null,
+            isArchived ? action(t('action.resumeArchived'),archive(true),'primary') : null,
             task.status === 'unknown' ? h(ConfirmButton,{label:t('task.releaseUnknown'),confirmLabel:t('task.releaseUnknownConfirm'),disabled:busy,
               onConfirm:()=>act(()=>call('/api/dsh-handshake/release-unconfirmed',{taskId:task.id,runId:task.runId ?? null}))}) : null,
             !canOpenPreferred ? h('span',{className:'dsh-handshake-muted'},t('task.openUnavailable')) : null,
@@ -824,7 +1000,7 @@ window.__ModuleLoader__.load({
       return h('div', { className:'dsh-handshake-wrap' },
         h(Styles),
         h('header', { className:'dsh-handshake-toolbar' },
-          h('div',{className:'dsh-handshake-header'},h(Icon,{size:21}),h('h1',null,t('board.title')),h('span',{className:'dsh-handshake-version'},'v0.2')),
+          h('div',{className:'dsh-handshake-header'},h(Icon,{size:21}),h('h1',null,t('board.title')),h('span',{className:'dsh-handshake-version'},'v0.2.1')),
           h('input',{type:'search',className:'dsh-handshake-search','aria-label':t('board.search'),placeholder:t('board.search'),value:search,onChange:(e)=>setSearch(e.target.value)}),
           management('history','board.history'), management('hidden','board.hidden'),
           h(Btn,{label:t('board.refresh'),onClick:()=>void reload(true)})),
@@ -869,7 +1045,7 @@ window.__ModuleLoader__.load({
       const prepare = async () => {
         setBusy(true); setError(null);
         try {
-          const detail = await call('/api/dsh-handshake/convert', { kind:'dsh', sessionId });
+          const detail = await call('/api/dsh-handshake/convert', { kind:'dsh', sessionId, preview:true });
           setTask(detail.task); setConfirmation(detail.taskSummary);
         } catch (e) { setError(String(e?.message ?? e)); }
         finally { setBusy(false); }

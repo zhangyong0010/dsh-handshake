@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+- Preview handoff materials and control whether source assistant replies are included.
+- Improve cancellation, recovery and test-result visibility.
+- Strengthen receiving-session receipts and retry guidance.
+
 ## 0.2.0
 
 - Streamline handoff confirmation and project cards across Codex and DSH.

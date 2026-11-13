@@ -5,6 +5,7 @@ function agentSessionId(agent) {
     agent?.sessionId ??
     agent?.session?.id ??
     agent?.session?.sessionId ??
+    agent?.session?.header?.id ??
     (typeof agent?.id === 'string' && agent.id.startsWith('session') ? agent.id : undefined)
   )
 }
@@ -21,8 +22,9 @@ function formatBoardLines() {
 export function registerAgent(ctx, core) {
   const offs = []
 
-  const tools = ctx.get?.('tools')
-  if (tools && typeof tools.register === 'function') {
+  const registerTool = (scope) => {
+    const tools = scope.tools ?? scope.get?.('tools')
+    if (typeof tools?.register !== 'function') return () => {}
     const dispose = tools.register({
       name: 'handshake',
       description:
@@ -34,7 +36,7 @@ export function registerAgent(ctx, core) {
           action: {
             type: 'string',
             enum: ['convert', 'import-codex', 'list', 'status', 'board', 'acknowledge'],
-            description: 'convert: 把会话转换成交接包（仅暂存）；import-codex: 导入 Codex rollout 文件；list/status/board: 查询。',
+            description: 'acknowledge: 当前 DSH 接收会话读完本轮交接资料后生成回执；convert/import-codex: 暂存；list/status/board: 查询。',
           },
           sessionId: { type: 'string', description: 'action=convert 时的 DSH 会话 ID（默认当前会话）' },
           rolloutFile: { type: 'string', description: 'action=import-codex 时的 rollout 文件路径' },
@@ -63,7 +65,7 @@ export function registerAgent(ctx, core) {
             const task = core.convertCodex({ rolloutFile: args?.rolloutFile })
             return { ok: true, taskId: task.id, status: task.status, hint: '已导入并暂存。请在接力看板点击「确认执行」完成交接。' }
           }
-          if (action === 'acknowledge') return { ok: true, reception: core.acknowledge(args) }
+          if (action === 'acknowledge') return { ok: true, reception: core.acknowledge(args, agentSessionId(exec?.agent)) }
           if (action === 'status') {
             return core.taskDetail(args?.taskId ?? '')
           }
@@ -77,8 +79,12 @@ export function registerAgent(ctx, core) {
         }
       },
     })
-    offs.push(typeof dispose === 'function' ? dispose : () => {})
+    return typeof dispose === 'function' ? dispose : () => {}
   }
+  const stopTools = ctx.inject
+    ? ctx.inject(['tools'], (scope) => scope.effect(() => registerTool(scope), 'dsh-handshake: agent tool'))
+    : registerTool(ctx)
+  if (typeof stopTools === 'function') offs.push(stopTools)
 
   const commands = ctx.get?.('commands')
   if (commands && typeof commands.register === 'function') {

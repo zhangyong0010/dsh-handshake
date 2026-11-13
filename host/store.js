@@ -140,10 +140,10 @@ function listTasks(project) {
   return tasks
 }
 export function loadAllTasks() { return listTasks() }
-export function loadTaskViews() {
-  return listTasks((task) => ({
+function taskView(task) {
+  return {
     id:task.id, title:task.title, status:task.status, projectId:task.projectId, projectDir:task.projectDir, updatedAt:task.updatedAt,
-    archivedAt:task.archivedAt, restoredAt:task.restoredAt, source:task.source, links:task.links, execution:task.execution,
+    archivedAt:task.archivedAt, restoredAt:task.restoredAt, previewOnly:task.previewOnly, source:task.source, links:task.links, execution:task.execution,
     rounds:task.rounds?.map((round) => ({ source:round.source, execution:round.execution && {
       codexSessionId:round.execution.codexSessionId, dshSessionId:round.execution.dshSessionId,
     } })),
@@ -151,8 +151,10 @@ export function loadTaskViews() {
       digest:task.packet.digest, projectId:task.packet.projectId, workspace:{ digest:task.packet.workspace?.digest },
       references:task.packet.references?.filter((reference) => reference.required) },
     summary:taskSummary(task),
-  }))
+    previewPrevious:task.previewPrevious ? taskView(task.previewPrevious) : null,
+  }
 }
+export function loadTaskViews() { return listTasks(taskView) }
 
 export function taskSummary(task) {
   return {
@@ -177,6 +179,10 @@ export function taskSummary(task) {
     packetDigest: task.packet?.digest ?? null,
     archivedAt: task.archivedAt ?? null,
     targetSession: task.packet?.executionPlan?.targetSession ?? null,
+    previewOnly: Boolean(task.previewOnly || task.previewPrevious),
+    includeAssistant: task.packet?.executionPlan?.includeAssistant !== false,
+    branch: task.packet?.workspace?.branch ?? null,
+    changedFileCount: task.packet?.workspace?.files?.length ?? 0,
     failureCode: task.execution?.failureCode ?? null,
     brief: task.packet?.brief ? { goal: task.packet.brief.goal, latestRequest: task.packet.brief.latestRequest, latestSourceId:task.packet.brief.latestSource?.id ?? null,
       clarification: task.packet.brief.clarification ?? null, clarificationScope: task.packet.brief.clarificationScope ?? null,

@@ -238,9 +238,24 @@ test('DSH → Codex → DSH → Codex uses one card, linked sessions, immutable 
 test('new native routes share refresh, project-edit and prepare operations; agent may acknowledge but cannot execute', async () => {
   fresh()
   const registered=[],toolSpecs=[]
-  const ctx=ctxFor({connection:{fetch:{register(route){registered.push(route);return ()=>{}}}},tools:{register(spec){toolSpecs.push(spec)}}})
+  const receiver='session-receipt-target'
+  const ctx=ctxFor({
+    connection:{fetch:{register(route){registered.push(route);return ()=>{}}}},
+    sessionController:{async create(){return receiver},async prompt(request){
+      assert.match(request.content[0].text,/原生 handshake 工具/)
+      assert.doesNotMatch(request.content[0].text,/ELECTRON_RUN_AS_NODE|receipt\.js/)
+      return {accepted:true}
+    }},
+  })
   const core=createCore(ctx), first=core.convertCodex({rolloutFile:rollout()})
-  registerRoutes(ctx,core); registerAgent(ctx,core,{})
+  registerRoutes(ctx,core)
+  let connectTools
+  registerAgent({...ctx,inject(services,connect){
+    assert.deepEqual(services,['tools'])
+    connectTools=connect
+  }},core)
+  assert.equal(toolSpecs.length,0)
+  connectTools({tools:{register(spec){toolSpecs.push(spec)}},effect(start){start()}})
   const post=async (name,body) => registered.find((route)=>route.path.endsWith('/'+name)).fetch(new Request('dsh-app://app/api/dsh-handshake/'+name,{
     method:'POST',headers:{'content-type':'application/json',origin:'dsh-app://app'},body:JSON.stringify(body),
   }))
@@ -250,9 +265,16 @@ test('new native routes share refresh, project-edit and prepare operations; agen
   assert.equal(refreshed.task.revision,2)
   const tool=toolSpecs[0]
   assert.equal(tool.parameters.properties.action.enum.includes('execute'),false)
-  const reply=await tool.execute({action:'acknowledge',taskId:first.id,revision:2,packetDigest:refreshed.task.packet.digest})
+  const receiptArgs={action:'acknowledge',taskId:first.id,revision:2,packetDigest:refreshed.task.packet.digest}
+  const invocation=(id)=>({agent:{session:{header:{id}}}})
+  assert.equal((await tool.execute(receiptArgs,invocation(receiver))).ok,false,'staged rounds cannot acknowledge')
+  const started=await post('execute',{taskId:first.id,expectedRevision:2,expectedDigest:refreshed.task.packet.digest})
+  assert.equal(started.status,200)
+  assert.equal((await tool.execute(receiptArgs,invocation('session-another-project'))).ok,false)
+  assert.equal((await tool.execute(receiptArgs)).ok,false)
+  const reply=await tool.execute(receiptArgs,invocation(receiver))
   assert.equal(reply.reception.status,'verified')
-  const stale=await tool.execute({action:'acknowledge',taskId:first.id,revision:1,packetDigest:first.packet.digest})
+  const stale=await tool.execute({action:'acknowledge',taskId:first.id,revision:1,packetDigest:first.packet.digest},invocation(receiver))
   assert.equal(stale.ok,false)
 })
 
@@ -405,6 +427,74 @@ test('the user can replace a missing linked session only with a new confirmation
   await assert.rejects(core.executeTask(binding),/交接资料已更新/)
   await core.executeTask({taskId:task.id,expectedRevision:replacement.revision,expectedDigest:replacement.packet.digest})
   assert.equal(creates,1)
+})
+
+test('a preview stays off the board, checks availability without dispatching, and discards safely', async () => {
+  fresh()
+  let launches = 0
+  const core = createCore(ctxFor({sessionController:{
+    async create(){ launches++; return 'session-preview' }, async prompt(){ launches++ },
+  }}))
+  const file = rollout({extra:[
+    {type:'response_item',payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'optional assistant content'}]}},
+  ]})
+  const preview = core.convertCodex({rolloutFile:file,preview:true})
+  const bind = (task) => ({taskId:task.id,expectedRevision:task.revision,expectedDigest:task.packet.digest})
+  assert.equal((await core.board()).tasks.some((task)=>task.id === preview.id),false)
+  assert.equal((await core.inspectTask(preview.id,preview.packet.digest)).status,'ready')
+  const revised = await core.setSharing({...bind(preview),includeAssistant:false})
+  const index = core.materials(revised.id,revised.packet.digest).files
+  assert.equal(index.some((entry)=>entry.kind === 'assistant-history.json'),false)
+  const prompt = core.materials(revised.id,revised.packet.digest,0).text
+  assert.doesNotMatch(prompt,/optional assistant content/)
+  assert.throws(()=>core.materials(revised.id,preview.packet.digest),{code:'brief-changed'})
+  core.discardPreview(bind(preview))
+  assert.equal(store.loadTask(preview.id).revision,revised.revision)
+  core.discardPreview(bind(revised))
+  assert.equal(store.loadTask(preview.id),null)
+  assert.equal(launches,0)
+})
+
+test('a cancelled continuation keeps the accepted result and never reuses a discarded revision', async () => {
+  fresh()
+  const original = rollout()
+  const events = []
+  const ctx = ctxFor({
+    sessionQuery:{async readSession(){return {session:{id:'session-continue',cwd},events}}},
+    sessionController:{async state(){return {running:false}},async create(){return 'session-continue'},async prompt(request){
+      events.push({type:'turn/start',seq:1,data:{turn:1}},
+        {type:'user/message',seq:2,data:{source:{kind:'user',rpcId:request.requestId},content:request.content}},
+        {type:'turn/end',seq:3,data:{turn:1,reason:{kind:'completed'}}})
+    }},
+  })
+  const core = createCore(ctx,{codexBinary:stub})
+  const task = core.convertCodex({rolloutFile:original})
+  await core.clarify({taskId:task.id,expectedRevision:task.revision,expectedDigest:task.packet.digest,note:'Verify only this round',scope:'round'})
+  const clarified = store.loadTask(task.id)
+  await core.setSharing({taskId:task.id,expectedRevision:clarified.revision,expectedDigest:clarified.packet.digest,includeAssistant:false})
+  await core.executeTask({taskId:task.id})
+  await core.finalizeTasks()
+  const result = store.loadTask(task.id)
+  assert.equal(result.status,'awaiting-review')
+  const retry = await core.refreshTask({taskId:task.id,preview:true,retryUnverified:true})
+  assert.equal(retry.packet.brief.clarification,'Verify only this round')
+  assert.equal(retry.packet.executionPlan.includeAssistant,false)
+  assert.equal(retry.packet.executionPlan.targetSession,'session-continue')
+  core.discardPreview({taskId:task.id,expectedRevision:retry.revision,expectedDigest:retry.packet.digest})
+  result.result.observed.checks = [
+    {command:"/bin/zsh -lc 'sh verify.sh'",exitCode:0},
+    {command:'git status',exitCode:0},
+    {tool:'bash',status:'completed'},
+  ]
+  store.saveTask(result)
+  assert.deepEqual(core.taskDetail(task.id).taskSummary.result.observed.checks.map((check)=>check.test),[true,undefined,undefined])
+  assert.equal(store.loadTask(task.id).result.observed.checks[0].test,undefined)
+  const preview = await core.prepareNext({taskId:task.id,preview:true})
+  assert.equal((await core.board()).tasks.find((entry)=>entry.id===task.id).status,'awaiting-review')
+  core.discardPreview({taskId:task.id,expectedRevision:preview.revision,expectedDigest:preview.packet.digest})
+  assert.deepEqual(store.loadTask(task.id).result,result.result)
+  const again = await core.prepareNext({taskId:task.id,preview:true})
+  assert.ok(again.revision > preview.revision)
 })
 
 test('an occupied Codex session can be replaced explicitly without changing its historical link', async () => {
