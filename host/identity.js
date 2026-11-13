@@ -29,13 +29,13 @@ export function projectSourceKey(kind, projectDir) {
   return key && kind ? `${kind}:project:${key}` : null
 }
 
-function activityTime(value) {
+export function activityTime(value) {
   const time = typeof value === 'number' || /^\d+$/.test(String(value ?? ''))
     ? Number(value) : Date.parse(value ?? '')
   return Number.isFinite(time) ? time : 0
 }
 
-/** One project card per column; its action targets the latest main session. */
+/** Keep exact session choices under one card for each project. */
 export function groupProjects(rows) {
   const groups = new Map()
   for (const row of rows) {
@@ -43,14 +43,18 @@ export function groupProjects(rows) {
     const id = sessionId(row.sessionId) || fileIdentity(row.file)
     const group = groups.get(key)
     if (!group) {
-      groups.set(key, { item: row, ids: new Set([id]) })
+      groups.set(key, { item: row, sessions: new Map([[id, row]]) })
       continue
     }
-    group.ids.add(id)
+    const previous = group.sessions.get(id)
+    if (!previous || activityTime(row.lastActivity) > activityTime(previous.lastActivity)) group.sessions.set(id, row)
     if (activityTime(row.lastActivity) > activityTime(group.item.lastActivity)) group.item = row
   }
   return [...groups.entries()]
-    .map(([key, { item, ids }]) => ({ ...item, projectKey: key, sessionCount: ids.size }))
+    .map(([key, { item, sessions }]) => ({
+      ...item, projectKey: key, sessionCount: sessions.size,
+      sessions: [...sessions.values()].sort((a, b) => activityTime(b.lastActivity) - activityTime(a.lastActivity)),
+    }))
     .sort((a, b) => activityTime(b.lastActivity) - activityTime(a.lastActivity))
 }
 

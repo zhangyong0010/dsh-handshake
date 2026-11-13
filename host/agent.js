@@ -1,10 +1,4 @@
-/**
- * Agent-facing entries, one operation two callers (user-actions.md):
- *   - the `/handshake` session command (user-initiated, may execute),
- *   - the `handshake` agent tool (staging and status only — executing a
- *     hand-off is an authority-granting action and stays user-only).
- */
-import { loadAllTasks, taskSummary } from './store.js'
+import { loadTaskViews } from './store.js'
 
 function agentSessionId(agent) {
   return (
@@ -15,16 +9,16 @@ function agentSessionId(agent) {
   )
 }
 
-function formatBoardLines(core) {
-  const tasks = loadAllTasks()
+function formatBoardLines() {
+  const tasks = loadTaskViews()
   if (tasks.length === 0) return ['还没有接力任务。用 /handshake convert 转换当前会话。']
   return tasks.map((task) => {
-    const summary = taskSummary(task)
+    const {summary} = task
     return `- [${summary.id}] ${summary.title} · ${summary.status} · 棒位 ${summary.owner} · ${summary.projectDir || '(无目录)'}`
   })
 }
 
-export function registerAgent(ctx, core, config) {
+export function registerAgent(ctx, core) {
   const offs = []
 
   const tools = ctx.get?.('tools')
@@ -77,7 +71,7 @@ export function registerAgent(ctx, core, config) {
             return await core.board()
           }
           /* list + default */
-          return { ok: true, tasks: loadAllTasks().map(taskSummary) }
+          return { ok: true, tasks: loadTaskViews().map((task) => task.summary) }
         } catch (error) {
           return { ok: false, error: String(error?.message ?? error) }
         }
@@ -107,14 +101,15 @@ export function registerAgent(ctx, core, config) {
             return { kind: 'success', text: `已导入 Codex 任务并暂存：${task.id}。运行 /handshake execute ${task.id} 转到 DSH 续做。` }
           }
           if (sub === 'execute') {
-            const task = await core.executeTask({ taskId: parts[1] ?? '' })
+            const { task: staged } = core.taskDetail(parts[1] ?? '')
+            const task = await core.executeTask({ taskId: staged.id, expectedRevision: staged.revision, expectedDigest: staged.packet?.digest })
             return { kind: 'success', text: `已启动执行（${task.execution?.transport ?? '?'}）。任务 ${task.id} 当前状态：${task.status}` }
           }
           if (sub === 'status') {
             const detail = core.taskDetail(parts[1] ?? '')
             return { kind: 'success', text: JSON.stringify({ task: detail.task }, null, 2) }
           }
-          return { kind: 'success', text: formatBoardLines(core).join('\n') }
+          return { kind: 'success', text: formatBoardLines().join('\n') }
         } catch (error) {
           return { kind: 'error', text: String(error?.message ?? error) }
         }

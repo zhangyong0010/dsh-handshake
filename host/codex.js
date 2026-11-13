@@ -1,13 +1,3 @@
-/**
- * Codex side adapter: rollout JSONL scanning and parsing, plus the latest
- * rate-limit snapshot.
- *
- * Format note: ~/.codex/sessions/... /rollout-*.jsonl is Codex's own local
- * record (session_meta + response_item/event_msg/token_count records). It is
- * not a published contract, so everything here parses by shape with per-line
- * try/catch and degrades to "meta only" instead of failing. Archived sessions
- * (*.jsonl.zst) are skipped on runtimes without a zstd decoder.
- */
 import fs from 'node:fs'
 import path from 'node:path'
 import { decompressFrames } from './zstd.js'
@@ -16,6 +6,45 @@ import { homeDir } from './util.js'
 
 export function codexHome() {
   return path.join(homeDir(), '.codex')
+}
+
+export function codexProjectNames() {
+  let desktop = {}
+  try { desktop = JSON.parse(fs.readFileSync(path.join(codexHome(), '.codex-global-state.json'), 'utf8')) ?? {} } catch { /* optional desktop metadata */ }
+  const projects = new Map()
+  const membership = new Map()
+  for (const [id, project] of Object.entries(desktop['local-projects'] ?? {})) {
+    if (typeof project?.name === 'string' && project.name.trim()) projects.set(id, { name: project.name.trim(), roots: Array.isArray(project.rootPaths) ? project.rootPaths : [] })
+  }
+  for (const [id, assignment] of Object.entries(desktop['thread-project-assignments'] ?? {})) {
+    if (assignment?.projectKind === 'local' && typeof assignment.projectId === 'string') membership.set(id, assignment.projectId)
+  }
+  // Desktop builds that have migrated projects store the live title here.
+  let db
+  try {
+    const file = fs.readdirSync(codexHome()).filter((name) => /^state_\d+\.sqlite$/.test(name)).sort((a,b) => Number(b.match(/\d+/)[0]) - Number(a.match(/\d+/)[0]))[0]
+    if (file) {
+      const { DatabaseSync } = process.getBuiltinModule?.('node:sqlite') ?? {}
+      if (!DatabaseSync) throw new Error('SQLite unavailable')
+      db = new DatabaseSync(path.join(codexHome(), file), { readOnly: true, timeout: 100 })
+      const migrated = new Map()
+      for (const row of db.prepare('SELECT p.id, p.name, r.path FROM projects p JOIN project_roots r ON r.project_id = p.id').all()) {
+        const project = migrated.get(row.id) ?? { name: row.name, roots: [] }
+        project.roots.push(row.path)
+        migrated.set(row.id, project)
+      }
+      for (const map of Object.values(desktop['app-server-project-id-by-legacy-project-id-by-host'] ?? {})) {
+        if (!map || typeof map !== 'object') continue
+        for (const [legacy, current] of Object.entries(map)) if (migrated.has(current)) projects.set(legacy, migrated.get(current))
+      }
+      for (const [id, project] of migrated) projects.set(id, project)
+      for (const row of db.prepare('SELECT id, project_id FROM threads WHERE project_id IS NOT NULL').all()) {
+        if (projects.has(row.project_id)) membership.set(row.id, row.project_id)
+      }
+    }
+  } catch { /* the desktop state is version-dependent; use the available metadata */ }
+  finally { try { db?.close() } catch { /* optional index */ } }
+  return { projects: [...new Set(projects.values())], forSession: (id) => projects.get(membership.get(id))?.name ?? null }
 }
 
 function sessionsRoot() {
@@ -45,7 +74,7 @@ export function listRolloutFiles(limit = 200) {
   for (const file of found) {
     try {
       const stat = fs.statSync(file)
-      scored.push({ file, mtimeMs: stat.mtimeMs, size: stat.size })
+      scored.push({ file, mtimeMs: stat.mtimeMs, size: stat.size, stamp: fileStamp(stat) })
     } catch {
       /* skip */
     }
@@ -63,7 +92,7 @@ function readHeadTail(file, headBytes = 256 * 1024, tailBytes = 128 * 1024) {
     const headBuffer = Buffer.alloc(Math.min(headBytes, size))
     fs.readSync(fd, headBuffer, 0, headBuffer.length, 0)
     let tailText = ''
-    if (size > headBytes) {
+    if (tailBytes && size > headBytes) {
       const tailLength = Math.min(tailBytes, size - headBytes)
       const tailBuffer = Buffer.alloc(tailLength)
       fs.readSync(fd, tailBuffer, 0, tailLength, size - tailLength)
@@ -97,7 +126,10 @@ function parseLines(text) {
   return records
 }
 
-/** Pull user/assistant texts and tool activity out of parsed rollout records. */
+export function isCodexUsageLimit(error, message) {
+  return /usage.?limit|rate.?limit|quota|额度/i.test(JSON.stringify([error, message]))
+}
+
 function harvestRollout(records) {
   const userTexts = []
   const assistantTexts = []
@@ -107,6 +139,7 @@ function harvestRollout(records) {
   let meta = null
   let tokens = null
   let running = null
+  let interruption = null
 
   const collectMessage = (payload, record) => {
     if (!payload || typeof payload !== 'object') return
@@ -168,8 +201,15 @@ function harvestRollout(records) {
       else if (innerType === 'function_call' || innerType === 'custom_tool_call') collectCall(inner)
     } else if (type === 'event_msg') {
       const innerType = payload?.type ?? ''
-      if (innerType === 'task_started') running = true
+      if (innerType === 'task_started') { running = true; interruption = null }
       if (['task_complete','task_completed','turn_aborted','task_failed'].includes(innerType)) running = false
+      if (innerType === 'error' && running !== false) {
+        const error = payload.codex_error_info ?? payload.codexErrorInfo
+        if (isCodexUsageLimit(error, payload.message)) {
+          interruption = 'usage-limit'
+          running = null
+        }
+      }
       if (innerType === 'user_message' || innerType === 'agent_message') {
         collectMessage({ role: innerType === 'user_message' ? 'user' : 'assistant', message: payload.message }, record)
       }
@@ -178,13 +218,19 @@ function harvestRollout(records) {
     if (type === 'token_count' || type === 'token_usage_record') tokens = payload
   }
 
-  return { meta, userTexts, assistantTexts, messages, running, toolPaths: [...toolPaths], toolNames: [...toolNames], tokens }
+  return { meta, userTexts, assistantTexts, messages, running, interruption, toolPaths: [...toolPaths], toolNames: [...toolNames], tokens }
 }
 
-/** Parse one rollout file fully (import path). */
+const fileStamp = (stat) => [stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':')
+const parsedFiles = new Map()
 export function parseRollout(file) {
+  const key = path.resolve(file)
   let text
+  let stat
   try {
+    stat = fs.statSync(file)
+    const saved = parsedFiles.get(key)
+    if (saved?.stamp === fileStamp(stat)) return { ...saved.value, file }
     if (file.endsWith('.zst')) {
       text = decompressFrames(fs.readFileSync(file))
     } else {
@@ -195,7 +241,7 @@ export function parseRollout(file) {
   }
   const harvested = harvestRollout(parseLines(text))
   const meta = harvested.meta ?? {}
-  return {
+  const value = {
     file,
     sessionId: meta.session_id ?? meta.id ?? null,
     projectDir: meta.cwd ?? null,
@@ -205,11 +251,20 @@ export function parseRollout(file) {
     userTexts: harvested.userTexts,
     messages: harvested.messages,
     running: harvested.running,
+    interruption: harvested.interruption,
     assistantTexts: harvested.assistantTexts,
     toolPaths: harvested.toolPaths,
     toolNames: harvested.toolNames,
     tokens: harvested.tokens,
   }
+  try {
+    if (stat.size <= 8 * 1024 * 1024 && fileStamp(stat) === fileStamp(fs.statSync(file))) {
+      parsedFiles.delete(key)
+      parsedFiles.set(key,{ stamp:fileStamp(stat),value })
+      if (parsedFiles.size > 4) parsedFiles.delete(parsedFiles.keys().next().value)
+    }
+  } catch { /* the file moved during parsing */ }
+  return { ...value }
 }
 
 /** Codex-internal reviewer threads (approval assessments) are not user tasks. */
@@ -239,37 +294,31 @@ export function taskTitle(text) {
   return (request.split('\n').find((line) => line.trim()) ?? '').slice(0, 120)
 }
 
-/** Summarize recent Codex threads for the import list. */
+const threadMetadata = new Map()
 export function listCodexThreads(limit = 20) {
   const threads = []
   const seenSessions = new Set()
-  for (const entry of listRolloutFiles(limit * 6)) {
+  const entries = listRolloutFiles(limit * 6)
+  const present = new Set(entries.map((entry) => entry.file))
+  for (const file of threadMetadata.keys()) if (!present.has(file)) threadMetadata.delete(file)
+  for (const entry of entries) {
     if (threads.length >= limit) break
     if (entry.file.endsWith('.zst')) continue
-    const { head, tail } = readHeadTail(entry.file)
-    const headRecords = parseLines(head)
-    const tailRecords = parseLines(tail)
-    const harvested = harvestRollout([...headRecords, ...tailRecords])
-    const meta = harvested.meta ?? {}
-    const sessionId = meta.session_id ?? meta.id ?? null
-    if (!sessionId || seenSessions.has(sessionId)) continue
-    const taskText = pickTaskText(harvested.userTexts)
-    if (!taskText) continue
-    const title = taskTitle(taskText)
-    if (INTERNAL_TITLE.test(title) || INSTRUCTION_TEXT.test(title)) continue
-    if (typeof sessionId === 'string') seenSessions.add(sessionId)
-    const lastAssistant = harvested.assistantTexts.length > 0
-      ? harvested.assistantTexts[harvested.assistantTexts.length - 1]
-      : ''
-    threads.push({
-      file: entry.file,
-      sessionId,
-      projectDir: meta.cwd ?? '',
-      title,
-      lastActivity: new Date(entry.mtimeMs).toISOString(),
-      originator: meta.originator ?? null,
-      lastAssistant: typeof lastAssistant === 'string' ? lastAssistant.slice(0, 600) : '',
-    })
+    let cached = threadMetadata.get(entry.file)
+    if (cached?.stamp !== entry.stamp) {
+      const { head, tail } = readHeadTail(entry.file)
+      const { meta, userTexts } = harvestRollout([...parseLines(head), ...parseLines(tail)])
+      const sessionId = meta?.session_id ?? meta?.id
+      const title = taskTitle(pickTaskText(userTexts))
+      const row = sessionId && title && !INTERNAL_TITLE.test(title) && !INSTRUCTION_TEXT.test(title)
+        ? { file:entry.file, sessionId, projectDir:meta.cwd ?? '', title, lastActivity:new Date(entry.mtimeMs).toISOString() }
+        : null
+      cached = { stamp:entry.stamp, row }
+      threadMetadata.set(entry.file,cached)
+    }
+    if (!cached.row || seenSessions.has(cached.row.sessionId)) continue
+    seenSessions.add(cached.row.sessionId)
+    threads.push(cached.row)
   }
   return threads
 }
@@ -277,12 +326,15 @@ export function listCodexThreads(limit = 20) {
 /** Associate a run only with its exact thread and project, never another active client. */
 export function findRunSessionFile(sinceMs, expected = {}) {
   if (!expected.sessionId) return null
-  for (const entry of listRolloutFiles(200)) {
-    if (entry.file.endsWith('.zst') || entry.mtimeMs < sinceMs - 5000) continue
-    const { head } = readHeadTail(entry.file)
+  const entries = listRolloutFiles(Infinity).filter((entry) => !entry.file.endsWith('.zst') && entry.mtimeMs >= sinceMs - 5000)
+  const named = entries.filter((entry) => path.basename(entry.file,'.jsonl').endsWith(`-${expected.sessionId}`))
+  const names = new Set(named.map((entry) => entry.file))
+  const directory = fileIdentity(expected.projectDir)
+  for (const entry of [...named,...entries.filter((entry) => !names.has(entry.file))]) {
+    const { head } = readHeadTail(entry.file,256 * 1024,0)
     const meta = parseLines(head).find((record) => record.type === 'session_meta')?.payload
     if ((meta?.session_id ?? meta?.id) !== expected.sessionId) continue
-    if (expected.projectDir && fileIdentity(meta?.cwd) !== fileIdentity(expected.projectDir)) continue
+    if (directory && fileIdentity(meta?.cwd) !== directory) continue
     return entry
   }
   return null

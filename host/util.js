@@ -102,3 +102,19 @@ export function homeDir() {
     return process.env.HOME ?? process.env.USERPROFILE ?? '/tmp'
   }
 }
+export async function withDeadline(action, ms = 5000) {
+  const controller = new AbortController()
+  let timer
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => action(controller.signal)),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          const error = new DOMException('DSH 会话服务响应超时','TimeoutError')
+          controller.abort(error)
+          reject(error)
+        },ms)
+      }),
+    ])
+  } finally { clearTimeout(timer) }
+}

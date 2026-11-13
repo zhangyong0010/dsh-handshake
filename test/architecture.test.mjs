@@ -5,6 +5,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 
 const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'handshake-architecture-')))
@@ -19,6 +20,8 @@ const { renderPrompt } = await import('../host/packet.js')
 const { normalizeMessages } = await import('../host/context.js')
 const { registerRoutes } = await import('../host/routes.js')
 const { registerAgent } = await import('../host/agent.js')
+const { withDeadline } = await import('../host/util.js')
+const { findRunSessionFile } = await import('../host/codex.js')
 const ctxFor = (services = {}) => ({get:(key) => services[key]})
 const cwd = path.join(home,'project')
 fs.mkdirSync(cwd)
@@ -125,7 +128,7 @@ test('receipts bind every required document, revision and workspace; tampering o
   receipt.revision++
   fs.writeFileSync(task.packet.receiptPath,JSON.stringify(receipt))
   assert.equal(readReceipt(task.packet).status,'invalid')
-  const evidence=task.packet.references.find((ref) => ref.kind === 'user-requests.json')
+  const evidence=task.packet.references.find((ref) => ref.kind === 'task-requirements.json')
   fs.appendFileSync(evidence.path,' ')
   assert.throws(() => writeReceipt(task.packet.manifestPath),/资料已变化/)
 })
@@ -144,7 +147,7 @@ test('code drift refreshes the round and refuses stale execution before creating
   fs.writeFileSync(path.join(cwd,'main.js'),'new user change\n')
   await assert.rejects(core.executeTask({taskId:first.id,expectedRevision:1}),/更新为第 2 轮/)
   assert.equal(creates,0)
-  await assert.rejects(core.executeTask({taskId:first.id,expectedRevision:1}),/版本已变化/)
+  await assert.rejects(core.executeTask({taskId:first.id,expectedRevision:1}),/已更新为第 2 轮/)
   const next=store.loadTask(first.id)
   writeReceipt(next.packet.manifestPath)
   fs.writeFileSync(path.join(cwd,'main.js'),'changed again\n')
@@ -193,10 +196,12 @@ test('DSH → Codex → DSH → Codex uses one card, linked sessions, immutable 
   const ctx=ctxFor({
     sessionQuery:{async listSessions(){return [{header:{id:'session-original-dsh',cwd}}]},async readSession(){return {session:{id:'session-original-dsh',cwd},events}}},
     sessionController:{async state(){return {running:false}},async create(){creates++;return 'unexpected'},async prompt(request,signal){
-      signal.throwIfAborted(); prompts++; assert.equal(request.sessionId,'original-dsh')
+      signal.throwIfAborted(); prompts++; assert.equal(request.sessionId,'session-original-dsh')
       const task=store.loadAllTasks()[0]; writeReceipt(task.packet.manifestPath)
-      events.push({type:'user/message',seq:4,data:{role:'user',content:request.content}},
-        {type:'assistant/message',seq:5,data:{role:'assistant',content:[{type:'text',text:'DSH 已核对并接续；未更改授权。'}]}}, {type:'turn/end',seq:6})
+      events.push({type:'turn/start',seq:4,data:{turn:2}},
+        {type:'user/message',seq:5,data:{role:'user',source:{kind:'user',rpcId:request.requestId},content:request.content}},
+        {type:'assistant/message',seq:6,data:{role:'assistant',content:[{type:'text',text:'DSH 已核对并接续；未更改授权。'}]}},
+        {type:'turn/end',seq:7,data:{turn:2,reason:{kind:'completed'}}})
       return {accepted:true}
     }},
   })
@@ -265,19 +270,22 @@ test('removing a project card archives historical duplicates instead of uncoveri
   assert.equal(store.loadTask('../private'),null)
 })
 
-test('DSH remains executing without a new turn/end, rejects manual completion and blocks another writer', async () => {
+test('DSH only accepts the end of the turn containing the handoff request', async () => {
   fresh()
   const events=[{type:'turn/end',seq:10}]
-  let running=true
-  const ctx=ctxFor({sessionController:{async create(){return 'session-destination'},async prompt(){},async state(){return {running}}},
+  let running=false, requestId
+  const ctx=ctxFor({sessionController:{async create(){return 'session-destination'},async prompt(request){requestId=request.requestId;running=true},async state(){return {running}}},
     sessionQuery:{async readSession(){return {session:{cwd},events}}}})
   const core=createCore(ctx), task=core.convertCodex({rolloutFile:rollout()})
   await core.executeTask({taskId:task.id})
   await core.finalizeTasks(); assert.equal(store.loadTask(task.id).status,'executing')
   assert.throws(()=>core.updateTask({taskId:task.id,patch:{status:'done'}}),/执行中的任务/)
   assert.throws(()=>core.updateProject({projectId:task.projectId,patch:{goal:'change'}}),/执行中/)
-  events.push({type:'turn/end',seq:11}); await core.finalizeTasks()
-  assert.equal(store.loadTask(task.id).status,'executing','end signal while target still running is insufficient')
+  events.push({type:'turn/start',seq:11,data:{turn:2}}, {type:'turn/end',seq:12,data:{turn:2,reason:{kind:'completed'}}})
+  await core.finalizeTasks()
+  assert.equal(store.loadTask(task.id).status,'executing','an unrelated turn is insufficient')
+  events.push({type:'turn/start',seq:13,data:{turn:3}}, {type:'user/message',seq:14,data:{source:{kind:'user',rpcId:requestId}}},
+    {type:'turn/end',seq:15,data:{turn:3,reason:{kind:'completed'}}})
   running=false; await core.finalizeTasks()
   assert.equal(store.loadTask(task.id).status,'awaiting-review')
   assert.equal(store.loadTask(task.id).reception.status,'pending','unverified receiver is visible')
@@ -288,6 +296,450 @@ test('a missing project cannot leave an empty staged card', () => {
   const core=createCore(ctxFor())
   assert.throws(()=>core.convertCodex({rolloutFile:rollout({dir:path.join(home,'nonexistent')})}),/不存在/)
   assert.equal(store.loadAllTasks().length,0)
+})
+
+test('client project renames update display only and the original source stays primary', async () => {
+  fresh()
+  const database = path.join(home, '.codex', 'state_5.sqlite')
+  const db = new DatabaseSync(database)
+  try {
+    db.exec('CREATE TABLE projects(id TEXT, name TEXT); CREATE TABLE project_roots(project_id TEXT, path TEXT); CREATE TABLE threads(id TEXT, project_id TEXT)')
+    db.prepare('INSERT INTO projects VALUES (?,?)').run('project-test','Codex label')
+    db.prepare('INSERT INTO project_roots VALUES (?,?)').run('project-test',cwd)
+    let dshTitle = 'DSH label'
+    const core = createCore(ctxFor({ workspaceRegistry:{ list:()=>[{ path:cwd, title:dshTitle, sessionIds:['session-label-dsh'] }] },
+      sessionQuery:{ async listSessions(){return [{header:{id:'session-label-dsh',cwd},updatedAt:'2020-01-01'}]} } }))
+    const source = rollout({id:'label-source'})
+    db.prepare('INSERT INTO threads VALUES (?,?)').run('label-source','project-test')
+    const cards = (await core.board()).codexThreads
+    const card = cards.find((row) => row.projectDir === cwd)
+    assert.equal(card.projectName,'Codex label')
+    assert.equal(card.sources.find((row)=>row.kind === 'dsh').projectName,'DSH label')
+    const task = core.convertCodex({rolloutFile:source})
+    dshTitle = 'New DSH name'
+    db.prepare('UPDATE projects SET name=? WHERE id=?').run('New Codex name','project-test')
+    const current = (await core.board({refresh:true})).tasks[0]
+    assert.equal(current.projectName,'New Codex name')
+    assert.deepEqual(current.projectNames,{codex:'New Codex name',dsh:'New DSH name'})
+    assert.equal(current.id,task.id)
+    assert.equal(current.packetDigest,task.packet.digest)
+    assert.equal(current.projectDir,cwd)
+  } finally { db.close(); fs.rmSync(database,{force:true}) }
+})
+
+test('a confirmation note creates a fresh approval and stays scoped to one round', async () => {
+  fresh()
+  const core = createCore(ctxFor({sessionController:{create(){assert.fail('stale approval must not create a session')},prompt(){}}}))
+  const source = rollout({messages:['请更新插件']})
+  const first = core.convertCodex({rolloutFile:source})
+  const binding = {taskId:first.id,expectedRevision:first.revision,expectedDigest:first.packet.digest}
+  const second = await core.clarify({...binding,note:'本轮只做审查，不修改代码。'})
+  assert.equal(second.revision,first.revision+1)
+  assert.equal(second.packet.executionPlan.mode,'read-only')
+  assert.match(renderPrompt(second.packet),/用户在确认页补充（仅本轮）/)
+  await assert.rejects(core.executeTask(binding),/交接资料已更新/)
+  core.updateTask({taskId:first.id,patch:{status:'done'}})
+  const third = core.convertCodex({rolloutFile:source})
+  assert.equal(third.packet.brief.clarification,null)
+  assert.equal(third.packet.executionPlan.mode,'workspace-write')
+})
+
+test('Codex quota interruption requires a fresh user stop confirmation and retains the exact receiver on return', async () => {
+  fresh()
+  const file = rollout({ extra:[
+    {type:'event_msg',payload:{type:'task_started'}},
+    {type:'event_msg',payload:{type:'error',codex_error_info:'usage_limit_reached',message:'Usage limit reached'}},
+  ] })
+  const events = []
+  let creates = 0
+  const core = createCore(ctxFor({
+    sessionQuery:{ async readSession(){return {session:{id:'session-quota',cwd},events}} },
+    sessionController:{ async state(){return {running:false}}, async create(){creates++;return 'session-quota'},
+      async prompt(request) {
+        events.push({type:'turn/start',seq:1,data:{turn:1}},
+          {type:'user/message',seq:2,data:{source:{kind:'user',rpcId:request.requestId},content:request.content}},
+          {type:'turn/end',seq:3,data:{turn:1,reason:{kind:'completed'}}})
+      },
+    },
+  }), {codexBinary:stub})
+  const task = core.convertCodex({rolloutFile:file})
+  const binding = {taskId:task.id,expectedRevision:task.revision,expectedDigest:task.packet.digest}
+  let token
+  await assert.rejects(core.executeTask(binding),(error)=>{token=error.stopToken;return error.code==='source-interrupted'})
+  assert.equal(creates,0)
+  fs.appendFileSync(file,JSON.stringify({type:'event_msg',payload:{type:'task_started'}})+'\n')
+  await assert.rejects(core.executeTask({...binding,stoppedSource:token}),{code:'source-running'})
+  assert.equal(creates,0)
+  fs.appendFileSync(file,JSON.stringify({type:'event_msg',payload:{type:'error',message:'Usage limit reached'}})+'\n')
+  let freshToken
+  await assert.rejects(core.executeTask({...binding,stoppedSource:token}),(error)=>{freshToken=error.stopToken;return error.code==='source-interrupted'})
+  assert.notEqual(freshToken,token)
+  await core.executeTask({...binding,stoppedSource:freshToken})
+  await core.finalizeTasks()
+  assert.equal(await core.openDsh(task.id),'session-quota')
+  const next = await core.prepareNext({taskId:task.id})
+  assert.equal(next.packet.executionPlan.targetSession,task.source.codexSessionId)
+  const returned = await core.executeTask({taskId:task.id,expectedRevision:next.revision,expectedDigest:next.packet.digest})
+  await until(()=>fs.existsSync(returned.execution.resultFile))
+  await core.finalizeTasks()
+  assert.equal(store.loadTask(task.id).execution.codexSessionId,task.source.codexSessionId)
+})
+
+test('the user can replace a missing linked session only with a new confirmation', async () => {
+  fresh()
+  let creates = 0
+  const core = createCore(ctxFor({
+    sessionQuery:{ async readSession(){return null} },
+    sessionController:{ async create({cwd:dir,sessionId}){assert.equal(dir,cwd);creates++;return sessionId}, async prompt(){} },
+  }))
+  const file = rollout()
+  const task = core.convertCodex({rolloutFile:file})
+  task.links.dshSessionId = 'session-missing'
+  store.saveTask(task)
+  const bound = await core.refreshTask({taskId:task.id})
+  const binding = {taskId:task.id,expectedRevision:bound.revision,expectedDigest:bound.packet.digest}
+  await assert.rejects(core.executeTask(binding),{code:'target-missing'})
+  const replacement = await core.replaceMissingTarget(binding)
+  assert.equal(creates,0)
+  assert.equal(replacement.packet.executionPlan.targetSession,null)
+  await assert.rejects(core.executeTask(binding),/交接资料已更新/)
+  await core.executeTask({taskId:task.id,expectedRevision:replacement.revision,expectedDigest:replacement.packet.digest})
+  assert.equal(creates,1)
+})
+
+test('an occupied Codex session can be replaced explicitly without changing its historical link', async () => {
+  fresh()
+  const dir = fs.mkdtempSync(path.join(home,'occupied-codex-'))
+  const id = 'original-occupied'
+  const file = rollout({id,dir,messages:['请完成测试任务']})
+  const binary = path.join(dir,'codex-fixture')
+  fs.writeFileSync(binary,`#!/bin/sh
+case "$*" in *--help*) exit 0;; esac
+cat >/dev/null
+case "$*" in
+  *resume*) echo 'Error: thread/resume: thread ${id} already has an active writer' >&2; exit 1;;
+esac
+echo '{"type":"thread.started","thread_id":"replacement-codex"}'
+`,{mode:0o700})
+  const sessionQuery = {async readSession(){return {session:{id:'session-dsh-fixture',cwd:dir},events:[
+    {type:'user/message',data:{role:'user',content:[{type:'text',text:'请完成测试任务'}]}},
+  ]}}}
+  const core = createCore(ctxFor({sessionQuery}),{codexBinary:binary})
+  const initial = await core.convertDsh({sessionId:'dsh-fixture'})
+  initial.links.codexSessionId = id
+  initial.links.codexRolloutFile = file
+  store.saveTask(initial)
+  const bind = (task) => ({taskId:task.id,expectedRevision:task.revision,expectedDigest:task.packet.digest})
+  const staged = await core.refreshTask({taskId:initial.id})
+  await assert.rejects(core.replaceMissingTarget(bind(staged)),/继续使用原会话/)
+  const running = await core.executeTask(bind(staged))
+  await until(()=>fs.existsSync(running.execution.resultFile))
+  await core.finalizeTasks()
+  const failed = store.loadTask(initial.id)
+  assert.equal(failed.execution.failureCode,'codex-session-occupied')
+  assert.equal(failed.links.codexSessionId,id)
+  const replacement = await core.replaceMissingTarget(bind(failed))
+  assert.equal(replacement.packet.executionPlan.targetSession,null)
+  assert.equal(replacement.links.codexSessionId,id)
+  await assert.rejects(core.executeTask(bind(failed)),/交接资料已更新/)
+  const started = await core.executeTask(bind(replacement))
+  await until(()=>fs.existsSync(started.execution.resultFile))
+  await core.finalizeTasks()
+  const complete = store.loadTask(initial.id)
+  assert.equal(complete.status,'awaiting-review')
+  assert.equal(complete.links.codexSessionId,'replacement-codex')
+  assert.equal(complete.rounds.find((round)=>round.revision===failed.revision).execution.codexSessionId,id)
+})
+
+test('task notes retain their confirmed round while explicit one-round notes expire', async () => {
+  fresh()
+  const events = []
+  const core = createCore(ctxFor({
+    sessionQuery:{async readSession(){return {session:{id:'session-notes',cwd},events}}},
+    sessionController:{async state(){return {running:false}},async create(){return 'session-notes'},async prompt(request){
+      const turn = events.length + 1
+      events.push({type:'turn/start',seq:turn,data:{turn}},
+        {type:'user/message',seq:turn+1,data:{source:{kind:'user',rpcId:request.requestId},content:request.content}},
+        {type:'turn/end',seq:turn+2,data:{turn,reason:{kind:'completed'}}})
+    }},
+  }),{codexBinary:stub})
+  const bind = (task) => ({taskId:task.id,expectedRevision:task.revision,expectedDigest:task.packet.digest})
+  const first = core.convertCodex({rolloutFile:rollout()})
+  const durable = await core.clarify({...bind(first),note:'保持公开 API 兼容',scope:'task'})
+  await core.executeTask(bind(durable))
+  await core.finalizeTasks()
+  const next = await core.prepareNext({taskId:first.id})
+  assert.deepEqual(next.packet.brief.inheritedNotes.map(({text,revision})=>[text,revision]),[['保持公开 API 兼容',durable.revision]])
+  const oneRound = await core.clarify({...bind(next),note:'本轮记录检查耗时',scope:'round'})
+  const returned = await core.executeTask(bind(oneRound))
+  await until(()=>fs.existsSync(returned.execution.resultFile))
+  await core.finalizeTasks()
+  const later = await core.prepareNext({taskId:first.id})
+  assert.equal(later.packet.brief.clarification,null)
+  assert.deepEqual(later.packet.brief.inheritedNotes.map((item)=>item.text),['保持公开 API 兼容'])
+  assert.doesNotMatch(renderPrompt(later.packet),/本轮记录检查耗时/)
+})
+
+test('a hanging runtime call times out and cancels its signal', async () => {
+  let signal
+  await assert.rejects(withDeadline((value) => {
+    signal = value
+    return new Promise(() => {})
+  },10),{name:'TimeoutError'})
+  assert.equal(signal.aborted,true)
+  assert.equal(await withDeadline(() => 'ready',100),'ready')
+})
+
+test('bad receipt data and an externally rewritten task do not leave a stale or broken board', async () => {
+  fresh()
+  const core = createCore(ctxFor())
+  const task = core.convertCodex({rolloutFile:rollout()})
+  core.updateTask({taskId:task.id,patch:{status:'awaiting-review'}})
+  const stored = store.loadTask(task.id)
+  stored.execution = { target:'dsh' }
+  store.saveTask(stored)
+  writeReceipt(task.packet.manifestPath)
+  assert.equal((await core.board()).tasks[0].reception.status,'verified')
+  fs.writeFileSync(task.packet.receiptPath,'{"read":{"bad":true}}')
+  assert.equal((await core.board()).tasks[0].reception.status,'invalid')
+  stored.title = '另一进程更新后的任务'
+  store.saveTask(stored)
+  assert.equal((await core.board()).tasks[0].title,stored.title)
+})
+
+test('an exact Codex destination is located even outside the recent candidate window', () => {
+  const old = rollout({id:'historical-exact-target'})
+  const date = new Date('2025-01-01')
+  fs.utimesSync(old,date,date)
+  const directory = fs.mkdtempSync(path.join(codexDir,'many-'))
+  try {
+    for (let i=0;i<210;i++) {
+      fs.writeFileSync(path.join(directory,`rollout-recent-${i}.jsonl`),
+        JSON.stringify({type:'session_meta',payload:{id:`new-${i}`,cwd}})+'\n')
+    }
+    assert.equal(findRunSessionFile(0,{sessionId:'historical-exact-target',projectDir:cwd}).file,old)
+    assert.equal(findRunSessionFile(0,{sessionId:'historical-exact-target',projectDir:directory}),null)
+  } finally { fs.rmSync(directory,{recursive:true,force:true}) }
+})
+
+test('archiving one task suppresses its sessions and project hiding survives reload without modifying rules', async () => {
+  fresh()
+  const dir = fs.mkdtempSync(path.join(home,'archive-project-'))
+  const file = rollout({dir,messages:['归档任务']})
+  const newFile = rollout({dir,messages:['独立的新任务']})
+  const core = createCore(ctxFor())
+  const task = core.convertCodex({rolloutFile:file})
+  const binding = {taskId:task.id,revision:task.revision,runId:null}
+  core.updateTask({taskId:task.id,patch:{status:'awaiting-review'}})
+  core.archiveTask(binding)
+  const reopened = createCore(ctxFor())
+  let board = await reopened.board()
+  assert.equal(board.tasks.some((row)=>row.id===task.id),false)
+  assert.equal(board.history.find((row)=>row.id===task.id).verification.status,'user-reviewed')
+  const candidate = board.codexThreads.find((row)=>row.projectId===task.projectId)
+  assert.deepEqual(candidate.sources[0].sessions.map((session)=>session.file),[newFile])
+  const revision = projects.readProject(task.projectId).masterRevision
+  reopened.hideProject({projectId:task.projectId,hidden:true})
+  board = await createCore(ctxFor()).board()
+  assert.equal(board.codexThreads.some((row)=>row.projectId===task.projectId),false)
+  assert.equal(board.hiddenProjects.some((row)=>row.id===task.projectId),true)
+  assert.equal(projects.readProject(task.projectId).masterRevision,revision)
+  reopened.archiveTask({...binding,restore:true})
+  board = await reopened.board()
+  assert.equal(board.tasks.some((row)=>row.id===task.id),true)
+  assert.equal(board.tasks.find((row)=>row.id===task.id).additionalSources.length,0)
+  reopened.hideProject({projectId:task.projectId,hidden:false})
+  assert.equal((await reopened.board()).tasks.find((row)=>row.id===task.id).additionalSources[0].sessions[0].file,newFile)
+})
+
+test('a provider error retains the scoped user amendment for a recovery handoff', async () => {
+  fresh()
+  const events = []
+  const core = createCore(ctxFor({ sessionController:{ async create(){return 'session-recovery'}, async state(){return {running:false}},
+    async prompt(request) { events.push({type:'turn/start',seq:1,data:{turn:1}},
+      {type:'user/message',seq:2,data:{role:'user',source:{kind:'user',rpcId:request.requestId},content:request.content}},
+      {type:'turn/end',seq:3,data:{turn:1,reason:{kind:'error',error:{code:'AUTH',message:'private credential detail'}}}}) } },
+    sessionQuery:{ async readSession(){return {session:{id:'session-recovery',cwd},events}} } }), {codexBinary:stub})
+  const first = core.convertCodex({rolloutFile:rollout({messages:['只做审查，不修改代码']})})
+  const writable = await core.clarify({taskId:first.id,expectedRevision:first.revision,expectedDigest:first.packet.digest,note:'Please edit only main.js.'})
+  await core.executeTask({taskId:first.id,expectedRevision:writable.revision,expectedDigest:writable.packet.digest})
+  await core.finalizeTasks()
+  const failed = store.loadTask(first.id)
+  assert.equal(failed.status,'failed')
+  assert.match(failed.error,/认证失败/)
+  assert.doesNotMatch(failed.error,/private credential/)
+  const recovery = await core.prepareNext({taskId:first.id})
+  assert.equal(recovery.target,'codex')
+  assert.equal(recovery.packet.executionPlan.mode,'workspace-write')
+  assert.equal(recovery.packet.brief.clarification,'Please edit only main.js.')
+})
+
+test('worktrees share a project, but preserve actual cwd and detect staged-only changes', async () => {
+  fresh()
+  const repo = fs.mkdtempSync(path.join(home, 'index-'))
+  const other = `${repo}-worktree`
+  const git = (dir, ...args) => {
+    const result = spawnSync('/usr/bin/git', ['-C', dir, ...args], { encoding: 'utf8' })
+    assert.equal(result.status, 0, result.stderr)
+    return result.stdout
+  }
+  git(repo, 'init', '-q')
+  fs.writeFileSync(path.join(repo, 'tracked'), 'base\n')
+  fs.writeFileSync(path.join(repo, 'AGENTS.md'), 'Root rules\n')
+  git(repo, 'add', '.')
+  git(repo, '-c', 'user.name=Fixture', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'base')
+  git(repo, 'worktree', 'add', '--detach', other)
+  const nested = path.join(other, 'nested')
+  fs.mkdirSync(nested)
+  fs.writeFileSync(path.join(nested, 'AGENTS.md'), 'Shadowed rules\n')
+  fs.writeFileSync(path.join(nested, 'AGENTS.override.md'), 'Nested rules\n')
+  const setIndex = (content) => {
+    fs.writeFileSync(path.join(other, 'tracked'), content)
+    git(other, 'add', 'tracked')
+    fs.writeFileSync(path.join(other, 'tracked'), 'same worktree\n')
+  }
+  setIndex('staged one\n')
+  let creates = 0
+  const core = createCore(ctxFor({ sessionController: { create() { creates++ }, prompt() {} } }))
+  const first = core.convertCodex({ rolloutFile: rollout({ dir: repo }) })
+  const second = core.convertCodex({ rolloutFile: rollout({ dir: nested }) })
+  assert.equal(second.projectId, first.projectId)
+  assert.notEqual(second.id, first.id)
+  assert.equal(second.projectDir, nested)
+  assert.deepEqual(second.packet.references.filter((ref) => ref.kind === 'project-rules').map((ref) => ref.name), ['AGENTS.md', 'nested/AGENTS.override.md'])
+  setIndex('staged two\n')
+  const snapshot = workspaceSnapshot(nested)
+  assert.equal(snapshot.status, second.packet.workspace.status)
+  assert.notEqual(snapshot.indexDigest, second.packet.workspace.indexDigest)
+  await assert.rejects(core.executeTask({ taskId: second.id, expectedRevision: second.revision, expectedDigest: second.packet.digest }), /更新为第 2 轮/)
+  assert.equal(creates, 0)
+})
+
+test('an amendment during the source idle check invalidates the previous approval', async () => {
+  fresh()
+  let enterIdle, finishIdle
+  const idle = new Promise((resolve) => { enterIdle = resolve })
+  const resume = new Promise((resolve) => { finishIdle = resolve })
+  const events = [{ type:'user/message', seq:1, data:{ role:'user', content:[{ type:'text', text:'请更新插件' }] } }]
+  const core = createCore(ctxFor({
+    sessionQuery: { async readSession() { return { session:{ cwd }, events } } },
+    sessionController: { async state() { enterIdle(); await resume; return { running:false } } },
+  }), { codexBinary: stub })
+  const first = await core.convertDsh({ sessionId:'source-race' })
+  const run = core.executeTask({ taskId:first.id, expectedRevision:first.revision, expectedDigest:first.packet.digest })
+  await idle
+  events.push({ type:'user/message', seq:2, data:{ role:'user', content:[{ type:'text', text:'此轮不修改代码，只做审查。' }] } })
+  const second = await core.refreshTask({ taskId:first.id })
+  finishIdle()
+  await assert.rejects(run, /更新为第 2 轮/)
+  const stored = store.loadTask(first.id)
+  assert.equal(stored.packet.digest, second.packet.digest)
+  assert.equal(stored.packet.executionPlan.mode, 'read-only')
+  assert.equal(stored.execution, null)
+})
+
+test('DSH lost acknowledgement is recovered by exact request and turn after restart', async () => {
+  fresh()
+  let sends = 0, requestId
+  const events = []
+  const services = { sessionController: {
+    async create({ sessionId }) { return { sessionId } },
+    async prompt(request) { sends++; requestId = request.requestId; throw new Error('connection lost') },
+    async state() { return { running:false } },
+  }, sessionQuery: { async readSession() { if (!events.length) throw new Error('read unavailable'); return { session:{ cwd }, events } } } }
+  const core = createCore(ctxFor(services))
+  const task = core.convertCodex({ rolloutFile:rollout() })
+  await assert.rejects(core.executeTask({ taskId:task.id }), /connection lost/)
+  const restarted = createCore(ctxFor(services))
+  assert.equal(store.loadTask(task.id).status, 'unknown')
+  await assert.rejects(restarted.executeTask({ taskId:task.id }), /仅待执行/)
+  events.push({ type:'turn/end', seq:10, data:{ turn:1, reason:{ kind:'completed' } } })
+  await restarted.finalizeTasks()
+  assert.equal(store.loadTask(task.id).status, 'unknown')
+  const report = { completed:['read the task'], remaining:['test UI'], checks:[], evidence:[], nextStep:'open the UI' }
+  events.push({ type:'turn/start', seq:11, data:{ turn:2 } },
+    { type:'user/message', seq:12, data:{ source:{ kind:'user', rpcId:requestId } } },
+    { type:'assistant/message', seq:13, data:{ role:'assistant', content:[{ type:'text', text:JSON.stringify(report) }] } },
+    { type:'turn/end', seq:14, data:{ turn:2, reason:{ kind:'completed' } } })
+  await restarted.finalizeTasks()
+  const settled = store.loadTask(task.id)
+  assert.equal(settled.status, 'awaiting-review')
+  assert.equal(settled.execution.turn, 2)
+  assert.deepEqual(settled.result.reported, report)
+  assert.equal(sends, 1)
+})
+
+test('read-only request is enforced by Codex and unsupported DSH handoffs are blocked', async () => {
+  fresh()
+  let creates = 0
+  const receiver = path.join(home, 'read-only-codex')
+  const argsFile = path.join(home, 'read-only-args')
+  fs.writeFileSync(receiver, '#!/bin/sh\ncase "$*" in *--help*) echo --output-schema; exit 0;; esac\nprintf "%s\\n" "$@" > "$DSH_HANDSHAKE_TEST_HOME/read-only-args"\ncat >/dev/null\necho \'{"type":"thread.started","thread_id":"readonly"}\'\necho \'{"type":"item.completed","item":{"id":"check","type":"command_execution","command":"node --check main.js","exit_code":0}}\'\necho \'{"type":"item.completed","item":{"type":"agent_message","text":"{\\"completed\\":[\\"reviewed\\"],\\"remaining\\":[],\\"checks\\":[],\\"evidence\\":[],\\"nextStep\\":\\"\\"}"}}\'\n', { mode:0o755 })
+  const core = createCore(ctxFor({
+    sessionQuery: { async readSession() { return { session:{ cwd }, events:[{ type:'user/message', data:{ role:'user', content:[{ type:'text', text:'只做审查，不修改代码。' }] } }] } } },
+    sessionController: { async create() { creates++ }, async prompt() {} },
+  }), { codexBinary: receiver })
+  const unsupported = core.convertCodex({ rolloutFile:rollout({ messages:['只做审查，不修改代码。'] }) })
+  await assert.rejects(core.executeTask({ taskId:unsupported.id }), /无法强制只读/)
+  assert.equal(creates, 0)
+  const allowed = await core.convertDsh({ sessionId:'readonly-source' })
+  const run = await core.executeTask({ taskId:allowed.id })
+  await until(() => fs.existsSync(run.execution.resultFile))
+  await core.finalizeTasks()
+  const args = fs.readFileSync(argsFile, 'utf8')
+  assert.match(args, /--sandbox\nread-only\n/)
+  assert.match(args, /--output-schema\n/)
+  assert.doesNotMatch(args, /--add-dir/)
+  const settled = store.loadTask(allowed.id)
+  assert.equal(settled.reception.status, 'host-checked')
+  assert.deepEqual(settled.result.reported.completed, ['reviewed'])
+  assert.deepEqual(settled.result.observed.checks, [{ command:'node --check main.js', exitCode:0, itemId:'check' }])
+})
+
+test('independent review uses a fresh read-only session and cloud instructions pin the verified commit', async () => {
+  fresh()
+  const repo = fs.mkdtempSync(path.join(home, 'review-'))
+  const git = (...args) => {
+    const result = spawnSync('/usr/bin/git', ['-C', repo, ...args], { encoding:'utf8' })
+    assert.equal(result.status, 0, result.stderr)
+    return result.stdout.trim()
+  }
+  git('init','-q')
+  fs.writeFileSync(path.join(repo,'main.js'),'initial\n')
+  git('add','.')
+  git('-c','user.name=Test','-c','user.email=test@example.invalid','-c','commit.gpgsign=false','commit','-qm','base')
+  const reviewer = path.join(home,'independent-reviewer')
+  const argsFile = path.join(home,'independent-reviewer-args')
+  const promptFile = path.join(home,'independent-reviewer-prompt')
+  fs.writeFileSync(reviewer, [
+    '#!/bin/sh',
+    'case "$*" in *--help*) echo --output-schema; exit 0;; esac',
+    'printf "%s\\n" "$@" > "$DSH_HANDSHAKE_TEST_HOME/independent-reviewer-args"',
+    'cat > "$DSH_HANDSHAKE_TEST_HOME/independent-reviewer-prompt"',
+    `echo '{"type":"thread.started","thread_id":"reviewer-fresh"}'`,
+    `echo '{"type":"turn.completed"}'`,
+  ].join('\n'), { mode:0o755 })
+  const core = createCore(ctxFor(), { codexBinary:reviewer })
+  const original = core.convertCodex({ rolloutFile:rollout({dir:repo,messages:['Audit this fixture']}) })
+  original.status = 'awaiting-review'
+  original.execution = {runId:'completed-fixture'}
+  original.result = {observed:{endCommit:git('rev-parse','HEAD'),endWorkspaceDigest:workspaceSnapshot(repo).digest,checks:[]},reported:{completed:['Unverified receiver claim']}}
+  store.saveTask(original)
+  const binding = {taskId:original.id,runId:original.execution.runId}
+  const [first,second] = await Promise.all([core.reviewTask(binding),core.reviewTask(binding)])
+  assert.equal(first.pid,second.pid)
+  await until(() => fs.existsSync(first.resultFile))
+  assert.equal(core.taskDetail(original.id).review.status,'complete')
+  assert.match(fs.readFileSync(argsFile,'utf8'),/--sandbox\nread-only/)
+  assert.doesNotMatch(fs.readFileSync(argsFile,'utf8'),/\nresume\n/)
+  assert.doesNotMatch(fs.readFileSync(promptFile,'utf8'),/Unverified receiver claim/)
+  const plan = core.cloudPlan(original.id)
+  assert.equal(plan.commit,git('rev-parse','HEAD'))
+  assert.ok(plan.instructions.includes(plan.commit))
+  assert.doesNotMatch(plan.instructions,/Audit this fixture|Unverified receiver claim/)
+  fs.appendFileSync(path.join(repo,'main.js'),'uncommitted\n')
+  assert.throws(() => core.cloudPlan(original.id),/干净 Git 提交/)
+  await assert.rejects(core.reviewTask(binding),/工作区已变化/)
 })
 
 test('quoted secrets are redacted before JSON encoding in rule and Git diff copies; task records are private', async () => {

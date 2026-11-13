@@ -1,19 +1,10 @@
-/**
- * Extract handoff context from a DSH session.
- *
- * Primary source: the `sessionQuery` Host service (handles the durable log in
- * any format). Fallback: the session's on-disk log file. Both feed one tolerant
- * harvester — session event schemas evolve, so the harvester collects by shape
- * (role-tagged texts, tool names, path-looking strings) instead of trusting
- * exact field names, and a sparse result is always acceptable.
- */
 import fs from 'node:fs'
-import { zstdDecompressSync } from 'node:zlib'
+import zlib from 'node:zlib'
 import path from 'node:path'
 import { decompressFrames } from './zstd.js'
 import { sessionId as normalizeId } from './identity.js'
 import { pickTaskText } from './codex.js'
-import { homeDir } from './util.js'
+import { homeDir, withDeadline } from './util.js'
 
 const isDelegated = (header) => header?.origin === 'subagent' || Number(header?.delegationDepth) > 0
 
@@ -24,11 +15,10 @@ function diskHeader(file) {
     const buffer = Buffer.alloc(Math.min(fs.fstatSync(fd).size, 256 * 1024))
     fs.readSync(fd, buffer, 0, buffer.length, 0)
     // The first independent frame holds the header; no body scan is needed here.
-    return JSON.parse(zstdDecompressSync(buffer).toString('utf8').split('\n')[0])
+    return JSON.parse(zlib.zstdDecompressSync(buffer).toString('utf8').split('\n')[0])
   } catch { return null } finally { if (fd !== undefined) fs.closeSync(fd) }
 }
 
-/** Recursively harvest texts/tool names/paths from unknown session data. */
 export function harvest(records) {
   const userTexts = []
   const assistantTexts = []
@@ -40,11 +30,11 @@ export function harvest(records) {
   const pathKey = /^(path|file_?path|filepath|filename)$/i
   const textKey = /^(text|input_text|output_text|content_?text)$/i
 
-  const visit = (value, role, depth) => {
+  const visit = (value, role, depth, includeText = true) => {
     if (value === null || value === undefined || depth > 24) return
     if (typeof value === 'string') return
     if (Array.isArray(value)) {
-      for (const item of value) visit(item, role, depth + 1)
+      for (const item of value) visit(item, role, depth + 1, includeText)
       return
     }
     if (typeof value !== 'object') return
@@ -61,7 +51,7 @@ export function harvest(records) {
     for (const [key, child] of Object.entries(value)) {
       if (typeof child === 'string') {
         if (pathKey.test(key) && looksLikePath(child)) filePaths.add(child)
-        else if (textKey.test(key) && child.trim() !== '') {
+        else if (includeText && textKey.test(key) && child.trim() !== '') {
           const text = child.trim()
           if (nextRole === 'user') {
             if (pickTaskText([text])) { userTexts.push(text); messages.push({ role: 'user', text, seq: currentRecord?.seq ?? messages.length, at: currentRecord?.time ?? currentRecord?.timestamp ?? null }) }
@@ -70,26 +60,16 @@ export function harvest(records) {
           }
         }
       } else {
-        visit(child, nextRole, depth + 1)
+        visit(child, nextRole, depth + 1, includeText)
       }
     }
   }
 
-  const hasCanonical = Array.isArray(records) && records.some((record) => ['user/message','assistant/message'].includes(record.type))
+  const authored = (record) => ['user/message','assistant/message'].includes(record?.type)
+  const hasCanonical = Array.isArray(records) && records.some(authored)
   for (const record of Array.isArray(records) ? records : [records]) {
     currentRecord = record
-    if (hasCanonical && !['user/message','assistant/message'].includes(record?.type)) {
-      // Traverse tooling without treating replayed inbox/system messages as authored requests.
-      const scanPaths = (value) => {
-        if (!value || typeof value !== 'object') return
-        for (const [key, child] of Object.entries(value)) {
-          if (pathKey.test(key) && typeof child === 'string' && looksLikePath(child)) filePaths.add(child)
-          else if (child && typeof child === 'object') scanPaths(child)
-        }
-      }
-      scanPaths(record); continue
-    }
-    visit(record, null, 0)
+    visit(record, null, 0, !hasCanonical || authored(record))
   }
   return { userTexts, assistantTexts, messages, toolNames: [...toolNames], filePaths: [...filePaths] }
 }
@@ -100,12 +80,12 @@ function looksLikePath(value) {
   return /^(\/|~\/|\.{1,2}\/)/.test(value) || /^[A-Za-z]:[\\/]/.test(value)
 }
 
-/** Best-effort title extraction from a readTitle result. */
-function titleFrom(value) {
+function titleFrom(value, depth = 0) {
+  if (depth > 8) return null
   if (typeof value === 'string') return value.trim() || null
   if (value && typeof value === 'object') {
     for (const key of ['title', 'text', 'value', 'displayTitle']) {
-      const found = titleFrom(value[key])
+      const found = titleFrom(value[key], depth + 1)
       if (found) return found
     }
   }
@@ -117,8 +97,8 @@ function truncate(text, max) {
   return s.length > max ? `${s.slice(0, max)}…` : s
 }
 
-/** Locate the on-disk log directory of one session, if any. */
 function findSessionDir(sessionId) {
+  if (!/^[a-z0-9_-]+$/i.test(sessionId)) return null
   const base = path.join(homeDir(), '.dsh', 'sessions')
   let groups = []
   try {
@@ -138,15 +118,13 @@ function findSessionDir(sessionId) {
 }
 
 /** Prefer durable activity over creation time when grouping a project's sessions. */
-function diskActivityAt(sessionId) {
-  const dir = findSessionDir(sessionId)
+function diskActivityAt(dir) {
   if (!dir) return null
   try { return fs.statSync(path.join(dir, 'session.v4.jsonl.zstd')).mtime.toISOString() } catch { return null }
 }
 
 /** Read a session's durable log file (zstd JSONL) into plain records. */
-function readSessionFile(sessionId) {
-  const dir = findSessionDir(sessionId)
+function readSessionFile(dir) {
   if (dir === null) return []
   let names = []
   try {
@@ -176,92 +154,108 @@ function readSessionFile(sessionId) {
   return []
 }
 
-/**
- * Extract relay context for one DSH session.
- * @param ctx - Host context; `sessionQuery` is optional and probed softly.
- * @param sessionId - Session identity.
- */
-export async function extractDshContext(ctx, sessionId) {
-  let title = null
-  let records = []
-  const notes = []
-
+export async function readDshRunEvents(ctx, id) {
+  if (!id) return null
   const query = safeGet(ctx, 'sessionQuery')
-  let queryId = sessionId
-  let queryHeader = null
-  try {
-    const list = await query?.listSessions?.()
-    const record = list?.find((r) => normalizeId(r.header?.id ?? r.sessionId ?? r.id) === normalizeId(sessionId))
-    queryHeader = record?.header ?? record
-    queryId = queryHeader?.id ?? record?.sessionId ?? sessionId
-  } catch { /* optional metadata */ }
-  if (query !== undefined) {
+  for (const candidate of new Set([id, `session-${normalizeId(id)}`])) {
     try {
-      const titleValue = await query.readTitle?.(queryId)
-      title = titleFrom(titleValue)
-    } catch {
-      notes.push('readTitle failed')
+      const snapshot = await withDeadline(() => query?.readSession?.(candidate))
+      const events = Array.isArray(snapshot) ? snapshot : snapshot?.events
+      if (Array.isArray(events)) return events
+    } catch { /* try the durable session record */ }
+  }
+  const events = readSessionFile(findSessionDir(normalizeId(id)))
+  return events.length ? events : null
+}
+
+export function observeDshRequest(events, requestId, baselineSeq) {
+  if (!requestId) return { receipt: false, turn: null, finish: null, evidence: [] }
+  let openTurn = null, matchedTurn = null, receipt = false, finish = null
+  const evidence = []
+  for (const event of events ?? []) {
+    if (!Number.isSafeInteger(event?.seq) || (baselineSeq !== null && baselineSeq !== undefined && event.seq <= baselineSeq)) continue
+    if (event.type === 'turn/start') openTurn = event.data?.turn ?? null
+    if (event.type === 'user/message' && event.data?.source?.kind === 'user' && event.data.source.rpcId === requestId && openTurn !== null) {
+      receipt = true
+      matchedTurn = openTurn
+      evidence.length = 0
+      finish = null
     }
-    try {
-      const snapshot = await query.readSession?.(queryId)
-      const list = Array.isArray(snapshot) ? snapshot : snapshot?.events
-      if (Array.isArray(list)) records = list
-      queryHeader = snapshot?.session ?? snapshot?.header ?? queryHeader
-    } catch { notes.push('readSession failed') }
-    if (records.length === 0) {
-      try {
-        const events = await query.listEvents?.(queryId)
-        const list = Array.isArray(events) ? events : events?.events
-        if (Array.isArray(list)) records = list
-      } catch { notes.push('listEvents failed') }
+    if (matchedTurn === null || openTurn !== matchedTurn) continue
+    evidence.push(event)
+    if (event.type === 'turn/end' && event.data?.turn === matchedTurn) {
+      finish = event.data.reason ?? null
+      openTurn = null
     }
   }
+  return { receipt, turn: matchedTurn, finish, evidence }
+}
 
-  if (records.length === 0) records = readSessionFile(sessionId)
+export async function extractDshContext(ctx, sessionId) {
+  const query = safeGet(ctx, 'sessionQuery')
+  const candidates = new Set([`session-${sessionId}`, sessionId])
+  let header, records, queryId
+  for (const id of candidates) {
+    try {
+      const snapshot = await withDeadline(() => query?.readSession?.(id))
+      const found = snapshot?.session ?? snapshot?.header
+      if (found?.id && normalizeId(found.id) !== sessionId) continue
+      const events = Array.isArray(snapshot) ? snapshot : snapshot?.events
+      if (!found && !Array.isArray(events)) continue
+      header = found
+      records = events
+      queryId = found?.id ?? id
+      break
+    } catch { /* try the other ID form */ }
+  }
 
+  let dir = null
+  let disk
+  const readDisk = () => {
+    if (!disk) {
+      dir = findSessionDir(sessionId)
+      disk = readSessionFile(dir)
+    }
+    return disk
+  }
+  if (!records?.length) {
+    try {
+      const response = await withDeadline(() => query?.listEvents?.(queryId ?? `session-${sessionId}`))
+      records = Array.isArray(response) ? response : response?.events
+    } catch { /* fall back to disk */ }
+  }
+  records = records?.length ? records : readDisk()
   let harvested = harvest(records)
-  if (!harvested.userTexts.length && !harvested.assistantTexts.length) {
-    const disk = readSessionFile(sessionId)
-    if (disk.length) { records = disk; harvested = harvest(records) }
+  if (!harvested.messages.length && records !== disk) {
+    const fallback = readDisk()
+    if (fallback.length) { records = fallback; harvested = harvest(records) }
   }
-  const requests = [...new Set(harvested.userTexts.map((text) => pickTaskText([text])).filter(Boolean))]
-  const firstUser = requests[0] ?? ''
-  const lastAssistant = harvested.assistantTexts.length > 0
-    ? harvested.assistantTexts[harvested.assistantTexts.length - 1]
-    : ''
 
-  let projectDir = queryHeader?.cwd || records.find((r) => r.type === 'session')?.cwd || records[0]?.header?.cwd || ''
+  let projectDir = header?.cwd ?? records.find((record) => record?.type === 'session')?.cwd ?? records[0]?.header?.cwd
+  let title = titleFrom(header?.title)
   if (!projectDir) {
     try {
-      const sessions = await query?.listSessions?.()
-      const record = sessions?.find((r) => normalizeId(r.header?.id ?? r.sessionId ?? r.id) === normalizeId(sessionId))
-      projectDir = record?.header?.cwd ?? record?.cwd ?? ''
-    } catch { /* disk header is authoritative when query metadata is unavailable */ }
+      const list = await withDeadline(() => query?.listSessions?.())
+      const record = list?.find((row) => normalizeId(row?.header?.id ?? row?.sessionId ?? row?.id) === sessionId)
+      projectDir = record?.header?.cwd ?? record?.cwd
+      title ??= titleFrom(record?.title ?? record?.header?.title)
+      queryId ??= record?.header?.id ?? record?.sessionId ?? record?.id
+    } catch { /* fall back to disk */ }
+  }
+  if (!title) {
+    try { title = titleFrom(await withDeadline(() => query?.readTitle?.(queryId ?? `session-${sessionId}`),1500)) } catch { /* title is optional */ }
   }
   if (!projectDir || !title) {
-    const disk = readSessionFile(sessionId)
-    projectDir ||= disk.find((r) => r.type === 'session')?.cwd ?? ''
-    title ||= titleFrom(disk.filter((r) => r.type === 'session/title').at(-1)?.data)
+    const fallback = readDisk()
+    projectDir ||= fallback.find((record) => record?.type === 'session')?.cwd
+    title ||= titleFrom(fallback.findLast((record) => record?.type === 'session/title')?.data)
   }
-  const goal = firstUser
-  const progressParts = harvested.assistantTexts.slice(-4)
+  const goal = pickTaskText(harvested.userTexts)
   return {
-    title: title || truncate(firstUser.split('\n')[0] || `DSH session ${sessionId}`, 100),
-    projectDir,
-    goal,
-    messages: harvested.messages,
-    userTexts: harvested.userTexts,
-    assistantTexts: harvested.assistantTexts,
-    sourceFile: findSessionDir(sessionId) ? path.join(findSessionDir(sessionId), 'session.v4.jsonl.zstd') : null,
-    recentRequests: requests.slice(1).slice(-4),
-    progress: progressParts.join('\n\n'),
-    keyFiles: harvested.filePaths.slice(0, 40),
-    tools: harvested.toolNames.slice(0, 30),
-    userMessageCount: harvested.userTexts.length,
-    assistantMessageCount: harvested.assistantTexts.length,
-    lastAssistant: truncate(lastAssistant, 1200),
-    fromSessionId: sessionId,
-    notes,
+    title: title || truncate(goal.split('\n')[0] || `DSH session ${sessionId}`, 100),
+    projectDir, goal, messages:harvested.messages,
+    progress:harvested.assistantTexts.slice(-4).join('\n\n'),
+    sourceFile:dir ? path.join(dir,'session.v4.jsonl.zstd') : null,
   }
 }
 
@@ -273,13 +267,22 @@ function safeGet(ctx, name) {
   }
 }
 
-/**
- * List DSH sessions that have not been turned into relay tasks yet.
- * Primary: `sessionQuery.listSessions()`. Fallback: the on-disk session
- * directories (workspace-group + session-uuid + mtime) when the service is
- * unavailable. Session ids are normalized (no `session-` prefix) so they
- * compare cleanly with task sources.
- */
+export function dshProjectNames(ctx) {
+  const registry = safeGet(ctx, 'workspaceRegistry')
+  let workspaces = []
+  try { workspaces = registry?.list?.() ?? [] } catch { /* optional on older hosts */ }
+  const membership = new Map()
+  const projects = []
+  for (const workspace of Array.isArray(workspaces) ? workspaces : []) {
+    const name = typeof workspace.title === 'string' && workspace.title.trim()
+    if (!name || typeof workspace.path !== 'string') continue
+    projects.push({ name, roots: [workspace.path] })
+    for (const id of workspace.sessionIds ?? []) membership.set(normalizeId(id), name)
+  }
+  return { projects, forSession: (id) => membership.get(normalizeId(id)) ?? null }
+}
+
+const titlesByQuery = new WeakMap()
 export async function listDshSessions(ctx, excludeSessionIds = new Set()) {
   const rows = []
   const excluded = new Set([...excludeSessionIds].map(normalizeId))
@@ -287,25 +290,44 @@ export async function listDshSessions(ctx, excludeSessionIds = new Set()) {
   let querySucceeded = false
   if (typeof query?.listSessions === 'function') {
     try {
-      const records = await query.listSessions()
+      const records = await withDeadline(() => query.listSessions())
       if (!Array.isArray(records)) throw new Error('Unexpected session list')
-      querySucceeded = true
-      for (const record of records) {
-        const header = record.header ?? record
-        if (isDelegated(header)) continue
-        const sessionId = normalizeId(header.id ?? record.sessionId ?? record.id)
-        if (!sessionId || excluded.has(sessionId)) continue
-        let title = titleFrom(record.title ?? header.title ?? record.projections?.values?.title)
-        if (!title) {
-          try { title = titleFrom(await query.readTitle?.(header.id ?? sessionId)) } catch { /* use fallback */ }
-        }
-        rows.push({
-          sessionId,
-          title: title || `DSH ${sessionId.slice(0, 8)}`,
-          projectDir: header.cwd ?? record.cwd ?? record.workspaceRoot ?? '',
-          lastActivity: record.updatedAt ?? record.lastActivity ?? record.modifiedAt ?? header.updatedAt ?? diskActivityAt(sessionId) ?? header.createdAt ?? null,
-        })
+      const catalog = records.flatMap((record) => {
+        const header = record?.header ?? record
+        if (!header || isDelegated(header)) return []
+        const id = header.id ?? record.sessionId ?? record.id
+        const sessionId = normalizeId(id)
+        if (!sessionId || excluded.has(sessionId)) return []
+        return [{ id, sessionId, header, record }]
+      })
+      const previousTitles = titlesByQuery.get(query) ?? new Map()
+      const titles = new Map()
+      titlesByQuery.set(query,titles)
+      const titleDeadline = Date.now() + 2000
+      for (let offset = 0; offset < catalog.length; offset += 8) {
+        const batch = await Promise.all(catalog.slice(offset,offset + 8).map(async ({ id, sessionId, header, record }) => {
+          const lastActivity = record.updatedAt ?? record.lastActivity ?? record.modifiedAt ?? header.updatedAt ??
+            diskActivityAt(findSessionDir(sessionId)) ?? header.createdAt ?? null
+          let title = titleFrom(record.title ?? header.title ?? record.projections?.values?.title)
+          const previous = previousTitles.get(id)
+          if (!title && lastActivity && previous?.lastActivity === lastActivity && previous.until > Date.now()) {
+            title = previous.title
+            titles.set(id,previous)
+          } else if (!title) {
+            const remaining = titleDeadline - Date.now()
+            if (remaining > 0) {
+              try { title = titleFrom(await withDeadline(() => query.readTitle?.(id),Math.min(500,remaining))) } catch { /* title is optional */ }
+            }
+            if (title && lastActivity) titles.set(id,{title,lastActivity,until:Date.now()+60000})
+          }
+          return {
+            sessionId, title:title || `DSH ${sessionId.slice(0,8)}`, lastActivity,
+            projectDir:header.cwd ?? record.cwd ?? record.workspaceRoot ?? '',
+          }
+        }))
+        rows.push(...batch)
       }
+      querySucceeded = true
     } catch { /* scan durable logs when the service is unavailable */ }
   }
   if (!querySucceeded) {
@@ -322,18 +344,19 @@ export async function listDshSessions(ctx, excludeSessionIds = new Set()) {
         const dir = path.join(base, group, entry)
         let stat
         try { stat = fs.statSync(path.join(dir, 'session.v4.jsonl.zstd')) } catch { continue }
-        const header = diskHeader(path.join(dir, 'session.v4.jsonl.zstd'))
-        if (isDelegated(header)) continue
         let cached = diskMetadata.get(dir)
-        if (!cached || cached.mtimeMs !== stat.mtimeMs) {
-          const records = readSessionFile(sessionId)
+        const stamp = [stat.ino,stat.size,stat.mtimeMs,stat.ctimeMs].join(':')
+        if (cached?.stamp !== stamp) {
+          const header = diskHeader(path.join(dir, 'session.v4.jsonl.zstd'))
+          if (isDelegated(header)) continue
+          const records = readSessionFile(dir)
           const fullHeader = header ?? records.find((r) => r.type === 'session')
+          if (isDelegated(fullHeader)) continue
           const titleEvent = records.filter((r) => r.type === 'session/title').at(-1)
           const first = harvest(records).userTexts.find((text) => !/^<|^# AGENTS|^You are /.test(text))
           cached = {
-            mtimeMs: stat.mtimeMs,
+            stamp,
             title: titleFrom(titleEvent?.data) || first?.split('\n')[0]?.slice(0, 120) || `DSH ${sessionId.slice(0, 8)}`,
-            // Never guess an actual filesystem path from a lossy folder encoding.
             projectDir: fullHeader?.cwd ?? '',
           }
           diskMetadata.set(dir, cached)

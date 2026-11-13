@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { digest } from './workspace.js'
 import { storeRoot } from './store.js'
-import { saveProject } from './projects.js'
+import { sourceKey } from './identity.js'
 
 export function redact(text) {
   return String(text ?? '')
@@ -26,6 +26,12 @@ const CATEGORIES = {
   todos: /待办|还需要|下一步|尚未|未完成|todo\b|next step|remaining/i,
   openQuestions: /未决|待确认|尚不确定|open question|unresolved/i,
 }
+function instructionBody(text) {
+  const request = /^## My request:\s*$/im.exec(text)
+  return (request ? text.slice(request.index + request[0].length) : text)
+    .replace(/^\s*```[^\n]*\n[\s\S]*?^\s*```[^\n]*$/gm, '')
+    .split('\n').filter((line) => !/^\s*>/.test(line)).join('\n').trim()
+}
 export function normalizeMessages(info, source) {
   const input = info.messages?.length ? info.messages : [
     ...(info.userTexts ?? [info.goal]).filter(Boolean).map((text) => ({ role: 'user', text })),
@@ -44,13 +50,12 @@ export function normalizeMessages(info, source) {
   }
   return messages
 }
-export function captureContext(task, project, info, snapshot, revision) {
-  const messages = normalizeMessages(info, task.source)
+export function captureContext(task, project, messages, snapshot, revision) {
   const user = messages.filter((message) => message.role === 'user')
-  if (!user.length && !messages.some((message) => message.role === 'assistant')) throw new Error('没有可交接的任务正文')
+  if (!user.length && !messages.some((message) => message.role === 'assistant') && !task.requirements?.length) throw new Error('没有可交接的任务正文')
   const candidates = []
   for (const message of user) {
-    for (const text of message.text.split(/\n|(?<=[。！？])\s*/).map((line) => line.trim()).filter(Boolean)) {
+    for (const text of instructionBody(message.text).split(/\n|(?<=[。！？])\s*/).map((line) => line.trim()).filter(Boolean)) {
       for (const [kind, pattern] of Object.entries(CATEGORIES)) if (pattern.test(text)) {
         candidates.push({ kind, text, sourceEntry: message.id, source: message.source, sessionId: message.sessionId, seq: message.seq, at: message.at, status: 'recorded' })
       }
@@ -64,26 +69,68 @@ export function captureContext(task, project, info, snapshot, revision) {
   assistant.required = false
   const safeSnapshot = redactValue(snapshot)
   const workspace = write('workspace.json', safeSnapshot)
-  const known = new Set(project.requirements.map((entry) => entry.id))
+  // Legacy project-wide evidence is retained on disk. Follow only references
+  // attributable to this task's actual session lineage.
+  const sameSession = (entry) => Boolean(entry.sessionId) && (entry.source === 'codex'
+    ? entry.sessionId === task.links?.codexSessionId
+    : sourceKey({ kind: 'dsh', sessionId: entry.sessionId }) === sourceKey({ kind: 'dsh', sessionId: task.links?.dshSessionId }))
+  const legacy = task.rounds?.length ? (project.requirements ?? []).filter(sameSession) : []
+  const history = task.requirements ?? legacy.flatMap((entry) => {
+    try {
+      const data = fs.readFileSync(entry.evidence)
+      if (digest(data) !== entry.sha256) return [entry]
+      const original = JSON.parse(data).messages.find((message) => message.id === entry.id)
+      return [{ ...entry, text: original?.text ?? entry.excerpt }]
+    } catch { return [entry] }
+  })
+  const known = new Set(history.map((entry) => entry.id))
   for (const message of user) if (!known.has(message.id)) {
-    project.requirements.push({ id: message.id, source: message.source, sessionId: message.sessionId, at: message.at, seq: message.seq,
-      evidence: requirements.path, sha256: requirements.sha256, excerpt: message.text.slice(0, 200) })
+    history.push({ id: message.id, source: message.source, sessionId: message.sessionId, at: message.at, seq: message.seq,
+      evidence: requirements.path, sha256: requirements.sha256, excerpt: message.text.slice(0, 200), text: message.text })
   }
-  if (!project.goal) project.goal = user[0]?.text ?? task.title
+  task.requirements = history
+  const firstRequest = history.find((entry) => entry.text || entry.excerpt) ?? user[0]
+  const previousResult = task.rounds?.filter((round) => round.result).at(-1)?.result ?? null
+  const initialGoal = instructionBody(firstRequest?.text ?? firstRequest?.excerpt ?? '') || task.title
+  task.intent ??= { goal: initialGoal, sourceEntry: firstRequest?.id ?? null }
+  const goal = project.goalConfirmed ? project.goal : task.intent.goal
+  const authority = project.goalConfirmed ? 'user-maintained' : 'initial-user-request-with-historical-scope'
+  const currentIds = new Set(user.map((message) => message.id))
+  const prior = [...new Map(history.filter((entry) => !currentIds.has(entry.id) && entry.evidence && entry.sha256)
+    .map((entry) => [entry.evidence, { path: entry.evidence, sha256: entry.sha256, required: false, kind: 'prior-user-evidence' }])).values()]
+  const original = new Map([...history, ...user].map((message) => [message.id, message]))
+  const instructions = [...original.values()].filter((message) => message.text || message.excerpt)
+  const last = instructions.at(-1)
+  const note = task.clarification ? { text: task.clarification, id: 'handoff-confirmation' } : null
+  const inheritedNotes = [...new Map((task.rounds ?? [])
+    .filter((round) => round.approval && round.status !== 'superseded' && round.clarificationScope === 'task' && round.clarification && round.clarification !== note?.text)
+    .map((round) => [round.clarification, { text: round.clarification, revision: round.revision, id: `handoff-confirmation:${round.revision}` }])).values()]
+  const persistentReadOnly = [...inheritedNotes, ...(note && task.clarificationScope === 'task' ? [note] : [])]
+    .filter((entry) => currentScope([entry]).mode === 'read-only')
+  const activeScope = currentScope([...instructions, ...(note ? [note] : []), ...persistentReadOnly, ...(project.constraints ?? []).filter((text) => currentScope([{ text }]).mode === 'read-only').map((text) => ({ text, id: `project:${project.id}:${project.masterRevision ?? 0}` }))])
+  const attributed = (kind, limit) => instructions.flatMap((message) => instructionBody(message.text ?? message.excerpt ?? '')
+    .split(/\n|(?<=[。！？])\s*/).filter((text) => CATEGORIES[kind].test(text))
+    .map((text) => ({ text: text.trim(), sourceEntry: message.id }))).slice(-limit)
+  const brief = {
+    goal, goalSource: authority === 'user-maintained' ? { projectId: project.id, revision: project.masterRevision } : task.intent.sourceEntry,
+    latestRequest: instructionBody(last?.text ?? last?.excerpt ?? ''), latestSource: last ? { id: last.id, source: last.source, sessionId: last.sessionId, seq: last.seq } : null,
+    clarification: note?.text ?? null, clarificationScope: task.clarificationScope ?? null, inheritedNotes,
+    scope: activeScope, explicitRules: project.constraints, acceptance: project.verify, decisions: project.decisions,
+    recentConstraints: attributed('constraints', 6), suggestedAcceptance: attributed('verify', 4),
+    progress: previousResult?.observed ?? { changedFiles: [], baselineFiles: snapshot.files.map((file) => file.path).slice(0, 30), checks: [] },
+    remaining: previousResult?.reported?.remaining ?? candidates.filter((entry) => entry.kind === 'todos').slice(-4).map((entry) => entry.text), nextStep: previousResult?.reported?.nextStep ?? '',
+  }
+  const briefRef = write('brief.json', brief)
+  const lineage = write('task-requirements.json', { messages: instructions.map(({id, source, sessionId, seq, text, excerpt}) => ({id, source, sessionId, seq, text: text ?? excerpt})) })
   const master = write('project-master.json', { projectId: project.id, revision: project.masterRevision ?? 0, goal: project.goal,
     goalAuthority: project.goalConfirmed ? 'user-maintained' : 'initial-user-request-with-historical-scope',
     constraints: project.constraints, decisions: project.decisions, verify: project.verify, notes: project.notes,
-    requirements: project.requirements, precedence: 'Confirmed rule arrays are user-maintained. An unconfirmed goal is only the initial user request, including its historical scope. Read evidence in order and respect later explicit amendments. Missing fields are unknown, never invented.' })
-  const currentIds = new Set(user.map((message) => message.id))
-  const prior = [...new Map(project.requirements.filter((entry) => !currentIds.has(entry.id)).map((entry) => [entry.evidence, { path: entry.evidence, sha256: entry.sha256, required: true, kind: 'prior-user-evidence' }])).values()]
-  project.sessions[task.source.kind] = { ...task.source, projectDir: task.projectDir, lastCapturedAt: new Date().toISOString() }
-  saveProject(project)
-  const references = [master, requirements, workspace, assistant, ...prior, ...snapshot.references.map((reference) => ({ ...reference, required: reference.kind === 'project-rules' }))]
+    precedence: 'Confirmed rules are user-maintained. Read the task brief for scoped requirements.' })
+  const references = [briefRef, lineage, master, { ...requirements, required: false }, workspace, assistant, ...prior, ...snapshot.references.map((reference) => ({ ...reference, required: reference.kind === 'project-rules' }))]
   const categories = (kind) => candidates.filter((entry) => entry.kind === kind)
   return {
-    goal: project.goal,
-    goalAuthority: project.goalConfirmed ? 'user-maintained' : 'initial-user-request-with-historical-scope',
-    latestRequest: user.at(-1)?.text ?? '',
+    goal, goalAuthority: authority, brief,
+    latestRequest: brief.latestRequest,
     recentRequests: user.slice(-4).map((message) => message.text),
     progress: messages.filter((message) => message.role === 'assistant').slice(-4).map((message) => message.text).join('\n\n'),
     constraints: [...project.constraints], decisions: [...project.decisions], verify: [...project.verify],
@@ -95,4 +142,19 @@ export function captureContext(task, project, info, snapshot, revision) {
       interpretation: '自动提取的约束/决策仅为带来源线索；项目主档中的人工维护字段才是已确认规则。历史本轮要求须结合后续用户授权解释。' },
     artifactsDir: dir, snapshot: safeSnapshot,
   }
+}
+
+// Deliberately conservative. Infer permission only from explicit user wording,
+// leaving ambiguous contradictions to the person confirming the handoff.
+function currentScope(messages) {
+  const readonly = /(?:只|仅)(?:做|需要|进行)?(?:读|分析|调研|审查|检查|评审|查看)|(?:不|不要|不得|禁止)(?:修改|改动|改写|改)(?:任何)?(?:代码|文件)|\b(?:read[- ]only(?: review| audit)?|review only)\b|\b(?:do not|don't) (?:edit|modify|change) (?:the )?(?:code|files)\b/i
+  const allowWrite = /(?:^|[。！？；，,\n]|请|可以|允许|开始|现在|本轮|此轮|先|直接|需要你)\s*(?:你|先|开始|进行|来|直接|做|把|完成|实现|给我|将){0,4}(?:修改|修复|更改|更新|开发|实现|改动)|\b(?:please|now|go ahead and|you may) (?:implement|fix|edit|modify)\b/i
+  for (const message of [...messages].reverse()) {
+    const text = instructionBody(message.text ?? message.excerpt ?? '')
+    const segments = text.split(/(?<=[。！？；])|\n/).filter((line) => !/^(?:如果|假如|以后|后续|下轮|if\b|later\b)/i.test(line.trim()))
+    const read = segments.some((segment) => readonly.test(segment))
+    const write = segments.some((segment) => allowWrite.test(segment))
+    if (read || write) return { mode: read && write ? 'conflict' : read ? 'read-only' : 'workspace-write', sourceEntry: message.id }
+  }
+  return { mode: 'workspace-write', sourceEntry: null }
 }

@@ -1,6 +1,6 @@
 # Development notes
 
-- Package version stays 0.1.0 and the UI stays v0.1 until the maintainer explicitly requests a version change.
+- Package version stays 0.2.0 and the UI stays v0.2 until the maintainer explicitly requests a version change.
 - Only Codex and DeepSeek Harness handoffs are supported. Keep documentation and release claims limited to verified behavior.
 - Preserve user evidence with provenance; historical assistant output and reference documents are not new user authorization.
 - Agent tools may prepare and inspect handoffs. Execution stays a user action.

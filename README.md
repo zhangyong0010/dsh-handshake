@@ -8,7 +8,7 @@
 
 Handshake 是一个装在 **DeepSeek Harness（DSH）** 里的任务接力插件。选择来源项目，创建交接资料，再确认交给另一端执行。当前只支持 **Codex ↔ DeepSeek Harness**；不是通用的多模型聊天迁移工具。
 
-[下载 v0.1.0](https://github.com/zhangyong0010/dsh-handshake/releases/tag/v0.1.0) · [最新安装包](https://github.com/zhangyong0010/dsh-handshake/releases/latest/download/dsh-handshake.tgz) · [English](#english)
+[下载 v0.2.0](https://github.com/zhangyong0010/dsh-handshake/releases/tag/v0.2.0) · [最新安装包](https://github.com/zhangyong0010/dsh-handshake/releases/latest/download/dsh-handshake.tgz) · [English](#english)
 
 ## 为什么不直接发一句 Prompt？
 
@@ -26,17 +26,17 @@ Handshake 是一个装在 **DeepSeek Harness（DSH）** 里的任务接力插件
 
 ## 用起来是什么样
 
-1. 在接力看板找到项目，点击 **创建接力任务**。这一步只整理资料，不启动模型。
-2. 查看目标端和交接资料，需要时编辑“项目共识”，然后 **确认执行**。
+1. 在接力看板找到项目，点击 **接力到 Codex** 或 **接力到 DSH**。这一步只整理资料，不启动模型。
+2. 查看目标端和交接资料，需要时编辑“项目共识”，然后 **开始接力**。
 3. 本轮结束后检查实际改动和测试。需要换回来时，在同一张卡继续接力。
 
-顶部绿色区域放已创建的接力任务；下方左侧紫色为 Codex 来源，右侧蓝色为 DSH 来源。每个来源列内，同一项目的多个主会话聚合成一张候选卡，操作指向最近活动的主会话；项目创建后从两侧待建区排除。
+顶部绿色区域放已创建的接力任务；下方左侧紫色为 Codex 来源，右侧蓝色为 DSH 来源。每个项目只显示一张候选卡，默认选择最近活动的来源，也可在卡内切换另一端。
 
 项目按真实目录和持久身份识别，符号链接会归一；同名的无关目录不会合并。搬迁目录需要显式绑定，避免把两个碰巧同名的项目交错。
 
 ## 安装与环境
 
-v0.1.0 的本机桌面验证环境为 **macOS、DSH 0.2.2-rc.1、Codex 桌面 App**。需要能读取两个客户端的本地会话记录，并访问同一个本地项目目录。Windows、Linux 和远程/跨机器接力尚未验证。
+v0.2.0 的本机桌面验证环境为 **macOS、DSH 0.2.2-rc.1、Codex 桌面 App**。需要能读取两个客户端的本地会话记录，并访问同一个本地项目目录。Windows、Linux 和远程/跨机器接力尚未验证。
 
 在 DSH 的插件页选择添加 GitHub 插件，填写：
 
@@ -53,11 +53,11 @@ Codex 优先使用桌面 App 的内置执行程序。其他安装位置可通过
 - 整理资料不调用来源模型。来源模型已经无法继续时，仍可读取本地记录准备交接。
 - 原始会话不改写。交接副本、项目共识、运行日志和逐轮资料保存在本机 `~/.dsh-handshake/`。
 - 历史助手结论、工具输出和参考文档不作为新增用户授权；后续明确用户修订优先，历史“此轮不修改”保留其阶段范围。
-- 常见凭据形式会在交接副本中脱敏。自动脱敏有边界，确认执行前仍应检查要交给目标模型的资料。
+- 常见凭据形式会在交接副本中脱敏。自动脱敏有边界，开始接力前仍应检查要交给目标模型的资料。
 - 资料核对回执绑定文件摘要、资料版本和代码基线。它不证明模型已经正确理解，也不代表任务通过验收；宿主不能强制模型先读后写。
 - 同项目执行锁只协调本插件，不能阻止用户在其他应用手动启动工作。若宿主在启动瞬间异常退出，需要结合目标端日志核对，不要把不明状态当成成功。
-- 插件没有独立的分析遥测或资料上传服务。确认执行后，目标客户端会按它自己的模型配置处理交接资料。
-- v0.1.0 不包含额度查询或额度计量功能。
+- 插件没有独立的分析遥测或资料上传服务。开始接力后，目标客户端会按它自己的模型配置处理交接资料。
+- v0.2.0 不包含额度查询或额度计量功能。
 
 内部适配依赖 DSH 控制器和 Codex 本地会话格式，上游更新可能需要调整。详情见 [交接格式](docs/handoff.md)。
 
@@ -81,7 +81,7 @@ A short task may need only a copied prompt. A longer project also needs the orig
 
 Preparation does not call the source model. A changed source, project agreement or workspace requires a fresh confirmation. Receiving-document receipts verify file hashes and the baseline; they do not prove model understanding or task acceptance. A finished run awaits review.
 
-The tested v0.1.0 desktop environment is macOS with DSH 0.2.2-rc.1 and the Codex desktop app. Other operating systems and cross-machine handoffs are unverified. Each client retains its own account, tools, model capabilities and permissions. The plugin does not migrate other chat applications, transfer quotas or provide quota metering.
+The tested v0.2.0 desktop environment is macOS with DSH 0.2.2-rc.1 and the Codex desktop app. Other operating systems and cross-machine handoffs are unverified. Each client retains its own account, tools, model capabilities and permissions. The plugin does not migrate other chat applications, transfer quotas or provide quota metering.
 
 Install from `github:zhangyong0010/dsh-handshake` in DSH, or use the [latest prebuilt tarball](https://github.com/zhangyong0010/dsh-handshake/releases/latest/download/dsh-handshake.tgz). Node.js 24+ is used for the dependency-free regression suite (`npm test`). The suite uses isolated fixtures and simulated receivers; it is not a real-model development benchmark.
 

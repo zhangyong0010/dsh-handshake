@@ -1,8 +1,3 @@
-/**
- * Host half of @local/dsh-handshake: relay storage, handoff packet core,
- * Codex adapters, execution transports, web routes, and agent entries.
- * The Client module (client.js) owns all rendering.
- */
 import { ensureStore } from './host/store.js'
 import { createCore } from './host/core.js'
 import { registerRoutes } from './host/routes.js'
@@ -13,7 +8,8 @@ export function apply(ctx, config) {
   const core = createCore(ctx, config ?? {})
   const offs = [
     registerRoutes(ctx, core),
-    registerAgent(ctx, core, config ?? {}),
+    registerAgent(ctx, core),
+    core.startObserver(),
   ]
   const cleanup = () => {
     for (const off of offs) {

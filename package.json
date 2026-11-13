@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-handshake",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Hand off development tasks between Codex and DeepSeek Harness with original requirements, shared project rules and workspace checks.",
@@ -43,7 +43,8 @@
       "platform": "web",
       "immediately": true,
       "inject": [
-        "@deepseek-ai/dsh-client-ui-conversation"
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-workspace"
       ]
     }
   },

@@ -1,11 +1,6 @@
-/**
- * Durable relay-task store. One JSON file per task under ~/.dsh-handshake/tasks,
- * plus an index.json of summaries. Writes are atomic (tmp + rename); the task
- * file is authoritative and the index is a derived cache that is rebuilt when
- * missing or inconsistent.
- */
 import fs from 'node:fs'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { homeDir } from './util.js'
 
 export const TASK_SCHEMA = 'dsh-handshake/task@1'
@@ -22,13 +17,10 @@ function runsDir() {
   return path.join(storeRoot(), 'runs')
 }
 
-function indexPath() {
-  return path.join(storeRoot(), 'index.json')
-}
-
 export function ensureStore() {
-  fs.mkdirSync(tasksDir(), { recursive: true })
-  fs.mkdirSync(runsDir(), { recursive: true })
+  fs.mkdirSync(storeRoot(), { recursive: true, mode: 0o700 })
+  fs.mkdirSync(tasksDir(), { recursive: true, mode: 0o700 })
+  fs.mkdirSync(runsDir(), { recursive: true, mode: 0o700 })
   return storeRoot()
 }
 
@@ -38,7 +30,7 @@ export function runLogPath(taskId) {
 }
 
 function atomicWrite(file, text) {
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`
+  const tmp = `${file}.tmp-${randomUUID()}`
   fs.writeFileSync(tmp, text, { encoding: 'utf8', mode: 0o600 })
   fs.renameSync(tmp, file)
 }
@@ -52,7 +44,6 @@ export function newTaskId() {
 }
 
 export function createTask(fields, { persist = true } = {}) {
-  ensureStore()
   const now = new Date().toISOString()
   const task = {
     schema: TASK_SCHEMA,
@@ -113,26 +104,54 @@ export function addRelay(task, entry) {
   return task
 }
 
-/** Load every task, newest activity first. Rebuilds from files on any miss. */
-export function loadAllTasks() {
-  ensureStore()
+const taskViews = new Map()
+function listTasks(project) {
   const tasks = []
-  let names = []
+  const dir = tasksDir()
+  let names
   try {
-    names = fs.readdirSync(tasksDir()).filter((n) => n.endsWith('.json'))
+    names = fs.readdirSync(dir).filter((n) => n.endsWith('.json'))
   } catch {
+    if (project) taskViews.clear()
     return []
   }
+  const files = project && new Set(names.map((name) => path.join(dir, name)))
+  if (files) for (const file of taskViews.keys()) if (!files.has(file)) taskViews.delete(file)
   for (const name of names) {
+    const file = path.join(dir, name)
     try {
-      const task = JSON.parse(fs.readFileSync(path.join(tasksDir(), name), 'utf8'))
-      if (task && typeof task.id === 'string') tasks.push(task)
+      const stat = project && fs.statSync(file)
+      const key = stat && [stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':')
+      const saved = project && taskViews.get(file)
+      if (saved && saved.key === key) {
+        tasks.push(saved.view)
+        continue
+      }
+      const task = JSON.parse(fs.readFileSync(file, 'utf8'))
+      if (typeof task?.id !== 'string') continue
+      const view = project ? project(task) : task
+      if (project) taskViews.set(file, { key, view })
+      tasks.push(view)
     } catch {
-      /* skip a corrupt file rather than losing the board */
+      if (project) taskViews.delete(file)
     }
   }
   tasks.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
   return tasks
+}
+export function loadAllTasks() { return listTasks() }
+export function loadTaskViews() {
+  return listTasks((task) => ({
+    id:task.id, title:task.title, status:task.status, projectId:task.projectId, projectDir:task.projectDir, updatedAt:task.updatedAt,
+    archivedAt:task.archivedAt, restoredAt:task.restoredAt, source:task.source, links:task.links, execution:task.execution,
+    rounds:task.rounds?.map((round) => ({ source:round.source, execution:round.execution && {
+      codexSessionId:round.execution.codexSessionId, dshSessionId:round.execution.dshSessionId,
+    } })),
+    packet:task.packet && { schema:task.packet.schema, executionPlan:task.packet.executionPlan, receiptPath:task.packet.receiptPath, revision:task.packet.revision,
+      digest:task.packet.digest, projectId:task.packet.projectId, workspace:{ digest:task.packet.workspace?.digest },
+      references:task.packet.references?.filter((reference) => reference.required) },
+    summary:taskSummary(task),
+  }))
 }
 
 export function taskSummary(task) {
@@ -154,6 +173,17 @@ export function taskSummary(task) {
     verification: task.verification ?? null,
     contextCoverage: task.packet?.coverage ?? null,
     protocol: task.packet?.schema ?? null,
+    runId: task.execution?.runId ?? null,
+    packetDigest: task.packet?.digest ?? null,
+    archivedAt: task.archivedAt ?? null,
+    targetSession: task.packet?.executionPlan?.targetSession ?? null,
+    failureCode: task.execution?.failureCode ?? null,
+    brief: task.packet?.brief ? { goal: task.packet.brief.goal, latestRequest: task.packet.brief.latestRequest, latestSourceId:task.packet.brief.latestSource?.id ?? null,
+      clarification: task.packet.brief.clarification ?? null, clarificationScope: task.packet.brief.clarificationScope ?? null,
+      inheritedNotes: task.packet.brief.inheritedNotes ?? [], explicitRules: task.packet.brief.explicitRules ?? [], acceptance: task.packet.brief.acceptance ?? [],
+      recentConstraints: task.packet.brief.recentConstraints ?? [], suggestedAcceptance: task.packet.brief.suggestedAcceptance ?? [],
+      nextStep: task.packet.brief.nextStep ?? null, remaining: task.packet.brief.remaining ?? [], mode: task.packet.executionPlan?.mode } : null,
+    result: task.result ?? null,
     relayCount: Array.isArray(task.relay) ? task.relay.length : 0,
     lastRelay: Array.isArray(task.relay) && task.relay.length > 0 ? task.relay[task.relay.length - 1] : null,
     edit: task.edit,

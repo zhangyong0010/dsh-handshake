@@ -1,6 +1,6 @@
 # Handoff documents
 
-Application version: 0.1.0. Internal packet schema: dsh-handshake/packet@2.
+Application version: 0.2.0. Internal packet schema: dsh-handshake/packet@3.
 
 Local data lives under ~/.dsh-handshake, outside this repository. Never commit it.
 

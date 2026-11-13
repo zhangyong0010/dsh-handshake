@@ -17,7 +17,7 @@ const store = await import('../host/store.js')
 const { createCore } = await import('../host/core.js')
 const { listDshSessions, extractDshContext } = await import('../host/dsh-session.js')
 const { parseRollout, listCodexThreads, pickTaskText, taskTitle } = await import('../host/codex.js')
-const { executeWithFallback } = await import('../host/executor.js')
+const { executeToCodex } = await import('../host/executor.js')
 const { renderPrompt } = await import('../host/packet.js')
 const { registerRoutes } = await import('../host/routes.js')
 const { groupProjects, projectKey } = await import('../host/identity.js')
@@ -120,10 +120,10 @@ test('board groups project sessions and excludes the whole created project and l
   fresh()
   const core = createCore(ctxFor({ sessionQuery: query }), {})
   let board = await core.board()
-  assert.equal(board.codexThreads.length, 1)
-  assert.equal(board.codexThreads[0].sessionCount, 2)
-  assert.equal(board.dshSessions.length, 1)
-  assert.equal(board.dshSessions[0].sessionCount, 3)
+  const cards = [...board.codexThreads, ...board.dshSessions]
+  assert.equal(cards.length, 1)
+  assert.equal(cards[0].sources.find((source) => source.kind === 'codex').sessionCount, 2)
+  assert.equal(cards[0].sources.find((source) => source.kind === 'dsh').sessionCount, 3)
   const task = core.convertCodex({ rolloutFile: sourceFile })
   task.execution = { dshSessionId: 'session-dsh-destination' }
   store.saveTask(task)
@@ -153,14 +153,18 @@ test('Codex → DSH execution creates once, injects exact packet and records des
 test('DSH prompt failure is visible and retry reuses the already-created session', async () => {
   fresh()
   let creates = 0, prompts = 0
-  const core = createCore(ctxFor({ sessionController: {
+  const core = createCore(ctxFor({ sessionQuery: {
+    async readSession(id) { return { session:{ id, cwd:project }, events:[] } },
+  }, sessionController: {
     async create() { creates++; return 'session-retry' },
-    async prompt() { if (++prompts === 1) throw new Error('queue offline') },
+    async prompt() { if (++prompts === 1) return { accepted: false } },
   } }), {})
   const task = core.convertCodex({ rolloutFile: sourceFile })
-  await assert.rejects(core.executeTask({ taskId: task.id }), /queue offline/)
+  await assert.rejects(core.executeTask({ taskId: task.id }), /未接受/)
   assert.equal(store.loadTask(task.id).status, 'failed')
-  const retried = await core.executeTask({ taskId: task.id })
+  const retry = await core.refreshTask({ taskId:task.id })
+  assert.equal(retry.packet.executionPlan.targetSession, 'session-retry')
+  const retried = await core.executeTask({ taskId:task.id, expectedRevision:retry.revision, expectedDigest:retry.packet.digest })
   assert.equal(creates, 1); assert.equal(retried.status, 'executing')
 })
 test('DSH → Codex runs with correct cwd, stdin, sandbox and result association', async () => {
@@ -168,6 +172,8 @@ test('DSH → Codex runs with correct cwd, stdin, sandbox and result association
   const core = createCore(ctxFor(), { codexBinary: stub })
   const task = await core.convertDsh({ sessionId: 'dsh-source' })
   const running = await core.executeTask({ taskId: task.id })
+  const changed = path.join(project, 'observed-change.js')
+  fs.writeFileSync(changed, 'after launch')
   const runFile = rollout('codex-run')
   const unrelated = rollout('unrelated-newest')
   fs.utimesSync(unrelated, new Date(Date.now() + 2000), new Date(Date.now() + 2000))
@@ -176,17 +182,17 @@ test('DSH → Codex runs with correct cwd, stdin, sandbox and result association
   const settled = store.loadTask(task.id)
   assert.equal(settled.status, 'awaiting-review')
   assert.equal(settled.execution.codexSessionId, 'codex-run')
-  assert.match(settled.edit.codex.fileList[0], /codex-run.js/)
+  assert.deepEqual(settled.result.observed.changedFiles, ['observed-change.js'])
   assert.equal(fs.realpathSync(fs.readFileSync(path.join(sandbox, 'cwd.txt'), 'utf8').trim()), fs.realpathSync(project))
   assert.match(fs.readFileSync(path.join(sandbox, 'prompt.txt'), 'utf8'), /完成 DSH 任务/)
   assert.match(fs.readFileSync(path.join(sandbox, 'args.txt'), 'utf8'), /--sandbox\nworkspace-write\n/)
-  fs.unlinkSync(runFile); fs.unlinkSync(unrelated)
+  fs.unlinkSync(runFile); fs.unlinkSync(unrelated); fs.unlinkSync(changed)
 })
 test('resume options precede subcommand and still send prompt via stdin', async () => {
   fresh()
   const core = createCore(ctxFor(), { codexBinary: stub })
   const task = core.convertCodex({ rolloutFile: sourceFile })
-  const running = { execution: await executeWithFallback({ ...task, execution: { codexSessionId: 'codex-source' } }, { codexBinary: stub }) }
+  const running = { execution: await executeToCodex({ ...task, execution: { codexSessionId: 'codex-source' } }, { codexBinary: stub }) }
   await waitForResult(running)
   const args = fs.readFileSync(path.join(sandbox, 'args.txt'), 'utf8').trim().split('\n')
   assert.ok(args.indexOf('--sandbox') < args.indexOf('resume'))
@@ -236,9 +242,9 @@ test('real HTTP convert routes preserve idempotency in both directions', async (
     assert.equal((await res.json()).tasks.length, 1)
   } finally { await new Promise((resolve) => server.close(resolve)) }
 })
-test('production bundle stays v0.1.0 and has no quota module or stream meter', () => {
+test('production bundle is v0.2.0 and has no quota module or stream meter', () => {
   const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url)))
-  assert.equal(pkg.version, '0.1.0')
+  assert.equal(pkg.version, '0.2.0')
   assert.equal(pkg.files.some((file) => /quota|usage/.test(file)), false)
   const core = fs.readFileSync(new URL('../host/core.js', import.meta.url), 'utf8')
   assert.doesNotMatch(core, /quota|pluginSettings/)
@@ -261,6 +267,25 @@ test('desktop native connection.fetch routes support conversion and reject forei
   const res = await route.fetch(make('https://localhost'))
   assert.equal(res.status, 200)
   assert.equal((await res.json()).task.projectDir, project)
+})
+
+test('Codex navigation accepts the desktop proxy while blocking browser and remote requests', async () => {
+  const registrations = []
+  const opened = []
+  const ctx = ctxFor({connection:{fetch:{register(route){registrations.push(route)}}}})
+  registerRoutes(ctx,{openCodex(...args){opened.push(args)}})
+  const route = registrations.find((entry)=>entry.path.endsWith('/open-codex'))
+  const request = (base,headers) => new Request(base + route.path,{
+    method:'POST', headers:{'content-type':'application/json', ...headers},
+    body:JSON.stringify({taskId:'fixture',role:'source'}),
+  })
+  assert.equal((await route.fetch(request('http://dsh.internal',{host:'127.0.0.1:3456'}))).status,200)
+  assert.equal((await route.fetch(request('dsh-app://app',{origin:'dsh-app://app'}))).status,200)
+  assert.equal((await route.fetch(request('http://dsh.internal',{host:'127.0.0.1:3456',origin:'http://127.0.0.1:3456'}))).status,403)
+  assert.equal((await route.fetch(request('http://dsh.internal',{host:'127.0.0.1:3456','sec-fetch-site':'same-origin'}))).status,500)
+  assert.equal((await route.fetch(request('http://dsh.internal',{host:'example.com'}))).status,500)
+  assert.equal((await route.fetch(request('http://127.0.0.1:3456',{host:'127.0.0.1:3456'}))).status,500)
+  assert.deepEqual(opened,[['fixture','source'],['fixture','source']])
 })
 
 test('DSH query reads raw events rather than body-free listEvents summaries', async () => {
@@ -301,25 +326,31 @@ test('project grouping combines relocated directories and selects the latest mai
   assert.equal(rows[0].sessionCount, 2, 'duplicate session entries do not inflate the count')
   assert.equal(projectKey('/old/Agent Dashboard/'), projectKey('/new/agent dashboard'))
 })
-test('creating a Codex project uses the displayed session and older sessions cannot recreate the card', async () => {
+test('the displayed Codex session is used and an independent session shares the card only', async () => {
   fresh()
   fs.utimesSync(sourceFile, new Date('2026-11-01'), new Date('2026-11-01'))
   fs.utimesSync(sourceCopy, new Date('2026-11-02'), new Date('2026-11-02'))
   fs.utimesSync(otherFile, new Date('2026-11-08'), new Date('2026-11-08'))
   const core = createCore(ctxFor(), {})
-  const candidate = (await core.board()).codexThreads[0]
+  const board = await core.board()
+  const candidate = [...board.codexThreads, ...board.dshSessions][0].sources.find((source) => source.kind === 'codex')
   assert.equal(candidate.sessionId, 'codex-other')
   const task = core.convertCodex({ rolloutFile: candidate.file })
   assert.equal(task.source.codexSessionId, candidate.sessionId)
-  assert.equal(core.convertCodex({ rolloutFile: sourceFile }).id, task.id)
-  assert.equal(store.loadAllTasks().length, 1)
+  const independent = core.convertCodex({ rolloutFile: sourceFile })
+  assert.notEqual(independent.id, task.id)
+  assert.equal(store.loadAllTasks().length, 2)
+  assert.equal((await core.board()).tasks.length, 1)
+  assert.deepEqual(core.taskDetail(task.id).relatedTasks.map((row) => row.id), [independent.id])
+  assert.equal(independent.packet.brief.goal.includes('codex-other'), false)
   assert.equal((await core.board()).codexThreads.length, 0)
   core.deleteTask(task.id)
-  const restored = (await core.board()).codexThreads
+  const restoredBoard = await core.board()
+  const restored = [...restoredBoard.codexThreads, ...restoredBoard.dshSessions]
   assert.equal(restored.length, 1)
-  assert.equal(restored[0].sessionCount, 2)
+  assert.equal(restored[0].sources.find((source) => source.kind === 'codex').sessionCount, 2)
 })
-test('concurrent DSH sessions of the same project create one relay and remove one project card', async () => {
+test('concurrent independent DSH sessions share one project card and retain both tasks', async () => {
   fresh()
   const core = createCore(ctxFor({ sessionQuery: {
     ...query,
@@ -329,8 +360,9 @@ test('concurrent DSH sessions of the same project create one relay and remove on
     core.convertDsh({ sessionId: 'dsh-source' }),
     core.convertDsh({ sessionId: 'dsh-other' }),
   ])
-  assert.equal(a.id, b.id)
-  assert.equal(store.loadAllTasks().length, 1)
+  assert.notEqual(a.id, b.id)
+  assert.equal(store.loadAllTasks().length, 2)
+  assert.equal((await core.board()).tasks.length, 1)
   assert.equal((await core.board()).dshSessions.length, 0)
   assert.equal((await core.board()).codexThreads.length, 0, 'one project card owns both directions')
 })

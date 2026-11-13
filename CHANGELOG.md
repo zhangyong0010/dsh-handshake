@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0
+
+- Streamline handoff confirmation and project cards across Codex and DSH.
+- Improve session recovery, execution checks, and handoff evidence.
+- Add read-only review and commit-bound cloud verification guidance.
+
 ## 0.1.0
 
 Initial public release. The plugin and UI versions remain 0.1.0 and v0.1.
